@@ -38,8 +38,6 @@ def create_ship(
     ship = storage.ships_dir / f"{repository.name}-{slug}"
     if ship.exists():
         raise ConflictError(f"ship already exists: {ship}")
-    for name in ("events", "decisions", "memory", "assignments"):
-        (ship / name).mkdir(parents=True)
     metadata = {
         "shipId": ship_id,
         "slug": slug,
@@ -47,14 +45,18 @@ def create_ship(
         "name": f"{repository.name}-{slug}",
         "createdAt": now(),
     }
-    storage.exclusive_write_json(ship / "metadata.json", metadata)
-    storage.atomic_write_text(ship / "index.md", f"# {metadata['name']}\n")
-    storage.exclusive_write_json(ship / "officer.json", officer or _officer())
+    with storage.staged_directory(ship) as staging:
+        for name in ("events", "decisions", "memory", "assignments"):
+            (staging / name).mkdir()
+        storage.exclusive_write_json(staging / "metadata.json", metadata)
+        storage.atomic_write_text(staging / "index.md", f"# {metadata['name']}\n")
+        storage.exclusive_write_json(staging / "officer.json", officer if officer is not None else _officer())
     return reconcile(ship, storage=storage)
 
 
 def open_ship(path: str | Path | None = None, *, storage: Storage | None = None) -> dict[str, Any]:
     storage = storage or Storage()
+    storage.ensure_defaults()
     ship = storage.resolve_ship(path)
     metadata = storage.read_json(ship / "metadata.json")
     repository = metadata.get("repoDir")
@@ -66,8 +68,8 @@ def open_ship(path: str | Path | None = None, *, storage: Storage | None = None)
     officer_path = ship / "officer.json"
     officer = storage.read_json(officer_path) if officer_path.exists() else {}
     current = _officer()
-    if current != officer:
-        officer = {**officer, **current}
+    if current and current != officer:
+        officer = current
         storage.atomic_write_json(officer_path, officer)
     return reconcile(ship, storage=storage)
 
@@ -88,20 +90,21 @@ def _all_events(ship: Path) -> list[dict[str, Any]]:
 
 def reconcile(path: str | Path, *, storage: Storage | None = None) -> dict[str, Any]:
     storage = storage or Storage()
+    storage.ensure_defaults()
     ship = storage.resolve_ship(path)
     metadata = storage.read_json(ship / "metadata.json")
     if not all(isinstance(metadata.get(key), str) and metadata[key] for key in ("shipId", "createdAt", "repoDir")):
         raise ValidationError("ship metadata requires shipId, createdAt, and repoDir")
     officer_path = ship / "officer.json"
     officer = storage.read_json(officer_path) if officer_path.exists() else {}
-    from . import assignments
+    from . import assignments, decisions
 
     assignment_views = []
     for directory in sorted((ship / "assignments").iterdir() if (ship / "assignments").exists() else []):
         if directory.is_dir() and (directory / "assignment.json").exists():
             assignment_views.append(assignments.inspect_assignment(ship, directory.name))
 
-    decisions = []
+    decision_records = []
     import json
 
     for decision_path in sorted((ship / "decisions").glob("*.json")):
@@ -110,17 +113,8 @@ def reconcile(path: str | Path, *, storage: Storage | None = None) -> dict[str, 
         except (OSError, json.JSONDecodeError) as exc:
             raise ValidationError(f"invalid decision record: {decision_path}") from exc
         if isinstance(record, dict):
-            decisions.append(record)
-    superseded = {item.get("supersedes") for item in decisions if item.get("supersedes")}
-    pending = [
-        item
-        for item in decisions
-        if item.get("id") not in superseded
-        and (
-            item.get("answer") is None
-            or (item.get("mode") == "reviewable" and item.get("reviewedAt") is None)
-        )
-    ]
+            decision_records.append(record)
+    pending = decisions.pending_decisions(ship, assignment_id=None)
     events = _all_events(ship)
     summary = {
         "assignmentCount": len(assignment_views),
@@ -140,7 +134,7 @@ def reconcile(path: str | Path, *, storage: Storage | None = None) -> dict[str, 
         "createdAt": metadata["createdAt"],
         "officer": officer,
         "assignments": assignment_views,
-        "decisions": decisions,
+        "decisions": decision_records,
         "pendingDecisions": pending,
         "events": events,
         "summary": summary,

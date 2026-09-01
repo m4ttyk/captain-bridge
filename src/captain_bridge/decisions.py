@@ -40,11 +40,32 @@ def _decision_path(ship: Path, decision_id: str) -> Path:
 def _read_decision(storage: Storage, path: Path, decision_id: str) -> dict[str, Any]:
     try:
         record = storage.read_json(path)
-    except json.JSONDecodeError as exc:
+    except (OSError, json.JSONDecodeError, ValidationError) as exc:
         raise OperationError(f"invalid decision record: {path}") from exc
     if not isinstance(record, dict) or record.get("id") != decision_id:
         raise OperationError(f"invalid decision record: {path}")
     return record
+
+
+def _all_decisions(storage: Storage, ship: Path) -> list[dict[str, Any]]:
+    directory = ship / "decisions"
+    if not directory.exists():
+        return []
+    return [
+        _read_decision(storage, path, _entity_id(path.stem, "decision"))
+        for path in sorted(directory.glob("*.json"))
+    ]
+
+
+def _superseded_by(records: list[dict[str, Any]]) -> dict[str, str]:
+    links: dict[str, str] = {}
+    for record in records:
+        target = record.get("supersedes")
+        if target is not None:
+            if target in links:
+                raise OperationError(f"decision {target} has multiple successors")
+            links[target] = record["id"]
+    return links
 
 
 def request_decision(
@@ -62,6 +83,7 @@ def request_decision(
     storage = Storage()
     ship = storage.resolve_ship(ship)
     question = _required(question, "question")
+    confidence = _required(confidence, "confidence")
     mode = decision_mode(confidence, _required(mode, "decision mode"))
     if not isinstance(blocks_further_dependent_work, bool):
         raise ValidationError("blocksFurtherDependentWork must be a boolean")
@@ -74,6 +96,8 @@ def request_decision(
     if supersedes is not None:
         supersedes = _entity_id(supersedes, "decision")
         _read_decision(storage, _decision_path(ship, supersedes), supersedes)
+        if supersedes in _superseded_by(_all_decisions(storage, ship)):
+            raise ConflictError(f"decision {supersedes} already has a successor")
 
     decision_id = new_id("decision")
     record: dict[str, Any] = {
@@ -95,8 +119,37 @@ def request_decision(
         "reviewedAt": None,
         "reviewNote": None,
     }
-    storage.exclusive_write_json(_decision_path(ship, decision_id), record)
+    if supersedes is not None:
+        with storage.file_lock(ship / "decisions.lock"):
+            _read_decision(storage, _decision_path(ship, supersedes), supersedes)
+            if supersedes in _superseded_by(_all_decisions(storage, ship)):
+                raise ConflictError(f"decision {supersedes} already has a successor")
+            storage.exclusive_write_json(_decision_path(ship, decision_id), record)
+    else:
+        storage.exclusive_write_json(_decision_path(ship, decision_id), record)
     return record
+
+
+def pending_decisions(
+    ship: Path,
+    assignment_id: str | None = None,
+) -> list[dict[str, Any]]:
+    storage = Storage()
+    ship = storage.resolve_ship(ship)
+    assignment_id = _entity_id(assignment_id, "assignment") if assignment_id is not None else None
+    records = _all_decisions(storage, ship)
+    superseded = _superseded_by(records)
+    pending = [
+        record
+        for record in records
+        if record["id"] not in superseded
+        and (assignment_id is None or record.get("assignmentId") == assignment_id)
+        and (
+            record.get("answer") is None
+            or (record.get("mode") == "reviewable" and record.get("reviewedAt") is None)
+        )
+    ]
+    return sorted(pending, key=lambda item: (item.get("createdAt", ""), item.get("id", "")))
 
 
 def resolve_decision(
@@ -110,24 +163,25 @@ def resolve_decision(
     storage = Storage()
     ship = storage.resolve_ship(ship)
     path = _decision_path(ship, decision_id)
-    record = _read_decision(storage, path, decision_id)
-    resolution = {
-        "answer": _required(answer, "answer"),
-        "resolvedBy": _required(resolved_by, "resolvedBy"),
-        "rationale": _required(rationale, "rationale"),
-    }
-    if record.get("status") == "resolved":
-        if all(record.get(key) == value for key, value in resolution.items()):
-            return record
-        raise ConflictError(f"decision {decision_id} is already resolved differently")
-    if record.get("status") != "pending":
-        raise ConflictError(f"decision {decision_id} cannot be resolved from status {record.get('status')!r}")
+    with storage.file_lock((ship / "decisions.lock").resolve()):
+        record = _read_decision(storage, path, decision_id)
+        resolution = {
+            "answer": _required(answer, "answer"),
+            "resolvedBy": _required(resolved_by, "resolvedBy"),
+            "rationale": _required(rationale, "rationale"),
+        }
+        if record.get("status") == "resolved":
+            if all(record.get(key) == value for key, value in resolution.items()):
+                return record
+            raise ConflictError(f"decision {decision_id} is already resolved differently")
+        if record.get("status") != "pending":
+            raise ConflictError(f"decision {decision_id} cannot be resolved from status {record.get('status')!r}")
 
-    record.update(resolution)
-    record["status"] = "resolved"
-    record["resolvedAt"] = now()
-    storage.atomic_write_json(path, record)
-    return record
+        record.update(resolution)
+        record["status"] = "resolved"
+        record["resolvedAt"] = now()
+        storage.atomic_write_json(path, record)
+        return record
 
 
 def review_decision(
@@ -139,16 +193,17 @@ def review_decision(
     storage = Storage()
     ship = storage.resolve_ship(ship)
     path = _decision_path(ship, decision_id)
-    record = _read_decision(storage, path, decision_id)
-    note = _optional(note, "review note")
-    if record.get("status") != "resolved":
-        raise ConflictError(f"decision {decision_id} must be resolved before review")
-    if record.get("reviewedAt") is not None:
-        if record.get("reviewNote") == note:
-            return record
-        raise ConflictError(f"decision {decision_id} was already reviewed with a different note")
+    with storage.file_lock((ship / "decisions.lock").resolve()):
+        record = _read_decision(storage, path, decision_id)
+        note = _optional(note, "review note")
+        if record.get("status") != "resolved":
+            raise ConflictError(f"decision {decision_id} must be resolved before review")
+        if record.get("reviewedAt") is not None:
+            if record.get("reviewNote") == note:
+                return record
+            raise ConflictError(f"decision {decision_id} was already reviewed with a different note")
 
-    record["reviewedAt"] = now()
-    record["reviewNote"] = note
-    storage.atomic_write_json(path, record)
-    return record
+        record["reviewedAt"] = now()
+        record["reviewNote"] = note
+        storage.atomic_write_json(path, record)
+        return record

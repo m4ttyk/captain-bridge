@@ -132,8 +132,11 @@ def _all_memories(storage: Storage) -> list[dict[str, Any]]:
 def _superseded_by(records: list[dict[str, Any]]) -> dict[str, str]:
     links: dict[str, str] = {}
     for record in sorted(records, key=lambda item: (item["createdAt"], item["id"])):
-        if record["supersedes"] is not None:
-            links[record["supersedes"]] = record["id"]
+        target = record["supersedes"]
+        if target is not None:
+            if target in links:
+                raise OperationError(f"memory {target} has multiple successors")
+            links[target] = record["id"]
     return links
 
 
@@ -164,6 +167,8 @@ def record_memory(
     if supersedes is not None:
         supersedes = _memory_id(supersedes)
         _read_path(_memory_dir(storage) / f"{supersedes}.md")
+        if supersedes in _superseded_by(_all_memories(storage)):
+            raise ConflictError(f"memory {supersedes} already has a successor")
 
     memory_id = new_id("memory")
     path = _memory_dir(storage) / f"{memory_id}.md"
@@ -178,7 +183,16 @@ def record_memory(
         "supersedes": supersedes,
         **sections,
     }
-    storage.atomic_write_text(path, _render(record))
+    if supersedes is not None:
+        with storage.file_lock(_memory_dir(storage) / "memory.lock"):
+            _read_path(_memory_dir(storage) / f"{supersedes}.md")
+            if supersedes in _superseded_by(_all_memories(storage)):
+                raise ConflictError(f"memory {supersedes} already has a successor")
+            if path.exists():
+                raise ConflictError(f"memory already exists: {memory_id}")
+            storage.atomic_write_text(path, _render(record))
+    else:
+        storage.atomic_write_text(path, _render(record))
     return record
 
 

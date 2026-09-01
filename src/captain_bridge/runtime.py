@@ -17,34 +17,58 @@ from .domain import (
 
 _AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _FACT_KEYS = ("agentName", "paneId", "worktreeDir", "launchedAt")
-_AGENT_STATES = {"working", "idle", "blocked", "done", "unknown"}
+_AGENT_STATES = {"working", "idle", "blocked", "done", "unknown", "stale"}
+_NOT_FOUND_CODES = {"agent_not_found", "agent-not-found", "not_found", "not-found"}
 
 
 def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
 
 
+def _json_error_code(text: str) -> str | None:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        return code if isinstance(code, str) else None
+    code = payload.get("code")
+    return code if isinstance(code, str) else None
+
+
 def _herdr(args: list[str], *, optional: bool = False) -> dict[str, Any] | None:
     completed = _run(["herdr", *args])
     if completed.returncode:
-        if optional:
-            return None
         detail = completed.stderr.strip() or completed.stdout.strip()
+        if optional and (
+            _json_error_code(completed.stderr) in _NOT_FOUND_CODES
+            or _json_error_code(completed.stdout) in _NOT_FOUND_CODES
+        ):
+            return None
         raise OperationError(f"Herdr command failed: {detail or completed.returncode}")
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
-        if optional:
-            return None
         raise OperationError("Herdr returned invalid JSON") from error
     if not isinstance(payload, dict):
-        if optional:
-            return None
         raise OperationError("Herdr returned invalid JSON")
+    if "error" in payload:
+        error = payload["error"]
+        code = error.get("code") if isinstance(error, dict) else None
+        if optional and code in _NOT_FOUND_CODES:
+            return None
+        detail = (
+            error.get("message") or code or "unknown error"
+            if isinstance(error, dict)
+            else str(error)
+        )
+        raise OperationError(f"Herdr command failed: {detail}")
     result = payload.get("result", payload)
     if not isinstance(result, dict):
-        if optional:
-            return None
         raise OperationError("Herdr returned an invalid result")
     return result
 
@@ -82,7 +106,7 @@ def _agent_name(assignment_id: str) -> str:
     return name
 
 
-def _repo_dir(ship_dir: Path) -> Path:
+def _repo_dir(ship_dir: Path, assignment: dict[str, Any]) -> Path:
     try:
         metadata = json.loads((ship_dir / "metadata.json").read_text(encoding="utf-8"))
     except FileNotFoundError as error:
@@ -92,10 +116,24 @@ def _repo_dir(ship_dir: Path) -> Path:
     raw = _field(metadata, "repoDir") if isinstance(metadata, dict) else None
     if not isinstance(raw, str) or not raw:
         raise ValidationError("ship metadata.repoDir is required")
-    repo = Path(raw).expanduser().resolve()
-    if not repo.is_dir():
-        raise NotFoundError(f"ship repository not found: {repo}")
-    return repo
+    ship_repo = Path(raw).expanduser().resolve()
+    assignment_raw = assignment.get("repoDir", assignment.get("repo_dir"))
+    if not isinstance(assignment_raw, str) or not assignment_raw:
+        raise ValidationError("assignment.repoDir is required")
+    assignment_repo = Path(assignment_raw).expanduser().resolve()
+    if assignment_repo != ship_repo:
+        raise ConflictError(
+            f"assignment repoDir does not match ship metadata.repoDir: {assignment_repo} != {ship_repo}"
+        )
+    if not assignment_repo.is_dir():
+        raise NotFoundError(f"ship repository not found: {assignment_repo}")
+    return assignment_repo
+
+
+def _canonical_worktree(repo: Path, assignment_id: str, repository_mode: str) -> Path:
+    if repository_mode == "read":
+        return repo
+    return repo.parent / ".captain-bridge-worktrees" / assignment_id
 
 
 def _prompt_path(ship_dir: Path, assignment: dict[str, Any], assignment_id: str) -> Path:
@@ -147,95 +185,158 @@ def _create_worktree(repo: Path, assignment_id: str) -> Path:
     if created.returncode:
         raise OperationError(created.stderr.strip() or "could not create assignment worktree")
     return worktree
+def _teardown_launch(repo: Path, pane_id: str | None, worktree: Path | None) -> None:
+    failures: list[str] = []
+    if pane_id:
+        try:
+            result = _run(["herdr", "pane", "close", pane_id])
+            if result.returncode:
+                detail = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
+                failures.append(f"pane close failed: {detail}")
+        except Exception as error:
+            failures.append(f"pane close raised {error}")
+    if worktree is not None and worktree.exists():
+        try:
+            result = _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo)
+            if result.returncode:
+                detail = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
+                failures.append(f"worktree removal failed: {detail}")
+        except Exception as error:
+            failures.append(f"worktree removal raised {error}")
+    if failures:
+        raise OperationError("; ".join(failures))
+
 
 
 def launch_assignment(
     ship_dir: str | Path,
     assignment: dict[str, Any],
-    role: dict[str, Any],
+    role: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    del role
     ship = Path(ship_dir).expanduser().resolve()
     assignment_id = validate_id(str(_field(assignment, "id", "assignment_id", "assignmentId") or ""), "assignment")
     agent_name = _agent_name(assignment_id)
+    repository_mode = assignment.get("repository")
+    if repository_mode not in {"read", "worktree"}:
+        raise ValidationError(f"invalid assignment repository mode: {repository_mode!r}")
+    repo = _repo_dir(ship, assignment)
+    canonical_worktree = _canonical_worktree(repo, assignment_id, repository_mode)
 
     existing = _facts(assignment)
     if any(existing.values()):
-        if not all(existing[key] for key in _FACT_KEYS):
+        if not all(isinstance(existing[key], str) and existing[key] for key in _FACT_KEYS):
             raise ConflictError("assignment has partial launch facts")
-        live = _agent(_herdr(["agent", "get", str(existing["agentName"])], optional=True))
-        if not live or _field(live, "pane_id", "paneId") != existing["paneId"]:
+        if existing["agentName"] != agent_name:
+            raise ConflictError("assignment launch facts have a non-canonical agent name")
+        live = _agent(_herdr(["agent", "get", agent_name], optional=True))
+        live_name = _field(live or {}, "name", "agentName", "agent_name")
+        live_pane = _field(live or {}, "pane_id", "paneId")
+        if not live or live_name != agent_name or live_pane != existing["paneId"]:
             raise ConflictError("assignment launch facts are not live")
         return existing
-    if _herdr(["agent", "get", agent_name], optional=True) is not None:
-        raise ConflictError(f"Herdr agent already exists without launch facts: {agent_name}")
+    live = _agent(_herdr(["agent", "get", agent_name], optional=True))
+    if live:
+        raise ConflictError(
+            f"live Herdr agent exists without persisted launch facts: {agent_name}"
+        )
+    if repository_mode == "worktree" and canonical_worktree.exists():
+        raise ConflictError(
+            f"partial launch found worktree without matching agent: {canonical_worktree}"
+        )
 
-    repository_mode = role.get("repository")
-    if repository_mode not in {"read", "worktree"}:
-        raise ValidationError(f"invalid role repository mode: {repository_mode!r}")
-    repo = _repo_dir(ship)
-    worktree = repo if repository_mode == "read" else _create_worktree(repo, assignment_id)
     prompt = _prompt_path(ship, assignment, assignment_id).read_text(encoding="utf-8")
+    worktree: Path | None = None
+    pane_id: str | None = None
+    try:
+        worktree = repo if repository_mode == "read" else _create_worktree(repo, assignment_id)
+        current = _herdr(["pane", "current", "--current"])
+        assert current is not None
+        officer = _officer_target(ship, current)
+        split = _herdr([
+            "pane",
+            "split",
+            "--current",
+            "--direction",
+            "right",
+            "--cwd",
+            str(worktree),
+            "--env",
+            f"CAPTAIN_BRIDGE_SHIP={ship}",
+            "--env",
+            f"CAPTAIN_BRIDGE_ASSIGNMENT={assignment_id}",
+            "--env",
+            f"CAPTAIN_BRIDGE_OFFICER={officer}",
+            "--no-focus",
+        ])
+        assert split is not None
+        pane = split.get("pane") if isinstance(split.get("pane"), dict) else split
+        pane_id = _field(pane, "pane_id", "paneId")
+        if not isinstance(pane_id, str) or not pane_id:
+            raise OperationError("Herdr split did not return a pane ID")
 
-    current = _herdr(["pane", "current", "--current"])
-    assert current is not None
-    officer = _officer_target(ship, current)
-    split = _herdr([
-        "pane",
-        "split",
-        "--current",
-        "--direction",
-        "right",
-        "--cwd",
-        str(worktree),
-        "--env",
-        f"CAPTAIN_BRIDGE_SHIP={ship}",
-        "--env",
-        f"CAPTAIN_BRIDGE_ASSIGNMENT={assignment_id}",
-        "--env",
-        f"CAPTAIN_BRIDGE_OFFICER={officer}",
-        "--no-focus",
-    ])
-    assert split is not None
-    pane = split.get("pane") if isinstance(split.get("pane"), dict) else split
-    pane_id = _field(pane, "pane_id", "paneId")
-    if not isinstance(pane_id, str) or not pane_id:
-        raise OperationError("Herdr split did not return a pane ID")
-
-    start_args = ["agent", "start", agent_name, "--kind", "omp", "--pane", pane_id]
-    native: list[str] = []
-    if role.get("model"):
-        native.extend(["--model", str(role["model"])])
-    if role.get("effort"):
-        native.extend(["--thinking", str(role["effort"])])
-    if native:
-        start_args.extend(["--", *native])
-    _herdr(start_args)
-    _herdr(["agent", "prompt", agent_name, prompt])
+        start_args = ["agent", "start", agent_name, "--kind", "omp", "--pane", pane_id]
+        native: list[str] = []
+        if assignment.get("model"):
+            native.extend(["--model", str(assignment["model"])])
+        if assignment.get("effort"):
+            native.extend(["--thinking", str(assignment["effort"])])
+        if native:
+            start_args.extend(["--", *native])
+        _herdr(start_args)
+        _herdr(["agent", "prompt", agent_name, prompt])
+    except Exception as original:
+        try:
+            _teardown_launch(repo, pane_id, worktree if repository_mode == "worktree" else None)
+        except Exception as cleanup:
+            raise OperationError(
+                f"launch failed: {original}; cleanup failed: {cleanup}"
+            ) from original
+        raise
     return {
         "agentName": agent_name,
         "paneId": pane_id,
         "worktreeDir": str(worktree),
         "launchedAt": now(),
     }
-
-
 def observe_assignment(ship_dir: str | Path, assignment: dict[str, Any]) -> dict[str, Any]:
     del ship_dir
     facts = _facts(assignment)
-    target = facts["agentName"] or facts["paneId"]
-    if not target:
-        raw_id = _field(assignment, "id", "assignment_id", "assignmentId")
-        target = _agent_name(str(raw_id)) if raw_id else None
-    live = _agent(_herdr(["agent", "get", str(target)], optional=True)) if target else None
-    observed: dict[str, Any] = {"available": bool(live), "status": "missing"}
+    raw_id = _field(assignment, "id", "assignment_id", "assignmentId")
+    target = _agent_name(str(raw_id)) if raw_id else facts["agentName"]
+    observed: dict[str, Any] = {"available": False, "status": "missing"}
     if facts["agentName"]:
         observed["agentName"] = facts["agentName"]
     if facts["paneId"]:
         observed["paneId"] = facts["paneId"]
+    if raw_id and facts["agentName"] and facts["agentName"] != target:
+        observed["status"] = "stale"
+        return observed
+    if not raw_id and (
+        not isinstance(target, str) or not _AGENT_NAME.fullmatch(target)
+    ):
+        observed["status"] = "stale"
+        return observed
+    if not target:
+        return observed
+
+    live = _agent(_herdr(["agent", "get", target], optional=True))
     if not live:
         return observed
-    observed["agentName"] = _field(live, "name") or facts["agentName"] or target
-    observed["paneId"] = _field(live, "pane_id", "paneId") or facts["paneId"]
+    live_name = _field(live, "name", "agentName", "agent_name")
+    live_pane = _field(live, "pane_id", "paneId")
+    if (
+        (facts["agentName"] and facts["agentName"] != target)
+        or (live_name is not None and live_name != target)
+        or (facts["paneId"] and live_pane != facts["paneId"])
+    ):
+        observed["status"] = "stale"
+        return observed
+
+    observed["available"] = True
+    observed["agentName"] = live_name or target
+    if live_pane:
+        observed["paneId"] = live_pane
     status = _field(live, "agent_status", "status") or "unknown"
     observed["status"] = status if status in _AGENT_STATES else "unknown"
     if live.get("revision") is not None:
@@ -244,18 +345,18 @@ def observe_assignment(ship_dir: str | Path, assignment: dict[str, Any]) -> dict
 
 
 def _message_bound(binding: dict[str, Any], message: str) -> bool:
-    targets = [
-        _field(binding, "agentName", "agent_name", "CAPTAIN_BRIDGE_OFFICER_NAME"),
-        _field(binding, "paneId", "pane_id", "CAPTAIN_BRIDGE_OFFICER_ID"),
-    ]
-    seen: set[str] = set()
-    for target in targets:
-        if not isinstance(target, str) or not target or target in seen:
-            continue
-        seen.add(target)
-        if _herdr(["agent", "prompt", target, message], optional=True) is not None:
-            return True
-    return False
+    target = _field(
+        binding,
+        "agentName",
+        "agent_name",
+        "CAPTAIN_BRIDGE_OFFICER_NAME",
+        "paneId",
+        "pane_id",
+        "CAPTAIN_BRIDGE_OFFICER_ID",
+    )
+    if not isinstance(target, str) or not target:
+        return False
+    return _herdr(["agent", "prompt", target, message], optional=True) is not None
 
 
 def message_crewmate(
@@ -266,8 +367,21 @@ def message_crewmate(
     del ship_dir
     if not isinstance(message, str) or not message.strip():
         raise ValidationError("crewmate message is required")
-    return _message_bound(_facts(assignment), message)
-
+    facts = _facts(assignment)
+    raw_id = _field(assignment, "id", "assignment_id", "assignmentId")
+    if not raw_id or not facts["agentName"] or not facts["paneId"]:
+        return False
+    target = _agent_name(str(raw_id))
+    if facts["agentName"] != target:
+        return False
+    live = _agent(_herdr(["agent", "get", target], optional=True))
+    if not live:
+        return False
+    live_name = _field(live, "name", "agentName", "agent_name")
+    live_pane = _field(live, "pane_id", "paneId")
+    if (live_name is not None and live_name != target) or live_pane != facts["paneId"]:
+        return False
+    return _message_bound({"agentName": target}, message)
 
 def wake_officer(ship_dir: str | Path, event: dict[str, Any]) -> bool:
     ship = Path(ship_dir).expanduser().resolve()

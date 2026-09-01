@@ -6,9 +6,21 @@ from pathlib import Path
 import sys
 
 from . import assignments, decisions, memory, runtime
-from .domain import CaptainError, NotFoundError, ValidationError, new_id, now, validate_event_kind, validate_id
+from .domain import (
+    CaptainError,
+    NotFoundError,
+    ValidationError,
+    new_id,
+    now,
+    parse_result_sections,
+    validate_event_kind,
+    validate_id,
+)
 from .ships import create_ship, open_ship, reconcile
 from .storage import Storage
+def _ship(value: str | None) -> Path:
+    return Storage().resolve_ship(value)
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise ValidationError(message)
@@ -32,12 +44,6 @@ def _text(value: str | None, file: str | None, label: str, *, required: bool = T
     if required and not value:
         raise ValidationError(f"{label} must not be empty")
     return value
-
-
-def _ship(value: str | None) -> str | None:
-    return value
-
-
 def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     storage = Storage()
     ship = storage.resolve_ship(args.ship)
@@ -45,6 +51,17 @@ def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     assignment_id = None
     if args.assignment is not None:
         assignment_id = validate_id(args.assignment, "assignment")
+    if kind == "result-ready":
+        if assignment_id is None:
+            raise ValidationError("result-ready requires an assignment")
+        result_path = ship / "assignments" / assignment_id / "result.md"
+        try:
+            result_text = result_path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise NotFoundError(f"assignment result not found: {result_path}") from exc
+        except OSError as exc:
+            raise ValidationError(f"cannot read assignment result: {result_path}") from exc
+        parse_result_sections(result_text)
     event = {
         "id": new_id("event"),
         "kind": kind,
@@ -54,12 +71,16 @@ def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     }
     storage.append_event(ship, event)
     woken = False
+    wake_error = None
     if kind == "result-ready":
         try:
             woken = bool(runtime.wake_officer(ship, event))
-        except Exception:
-            woken = False
-    return {"event": event, "officerWoken": woken}
+        except CaptainError as exc:
+            wake_error = str(exc)
+    result = {"event": event, "officerWoken": woken}
+    if wake_error is not None:
+        result["wakeError"] = wake_error
+    return result
 
 
 def _run(args: argparse.Namespace) -> Any:

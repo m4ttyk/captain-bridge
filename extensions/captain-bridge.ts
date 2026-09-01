@@ -24,13 +24,15 @@ export default function captainBridge(pi: ExtensionAPI) {
   const assignment = process.env.CAPTAIN_BRIDGE_ASSIGNMENT;
   const officer = process.env.CAPTAIN_BRIDGE_OFFICER;
   let binding: Binding | undefined;
+  let resultReadyEmitted = false;
+  let resultReadyPending = false;
 
   function notify(ctx: ExtensionContext, message: string) {
     ctx.ui.notify(`Captain Bridge: ${message}`, "warning");
   }
 
-  async function emit(kind: EventKind, ctx: ExtensionContext) {
-    if (!binding) return;
+  async function emit(kind: EventKind, ctx: ExtensionContext): Promise<boolean> {
+    if (!binding) return false;
 
     try {
       const result = await pi.exec(
@@ -52,9 +54,12 @@ export default function captainBridge(pi: ExtensionAPI) {
       if (result.code !== 0) {
         const detail = result.stderr.trim();
         notify(ctx, `${kind} was not recorded${detail ? `: ${detail}` : ` (exit ${result.code})`}`);
+        return false;
       }
+      return true;
     } catch (error) {
       notify(ctx, `${kind} was not recorded: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 
@@ -71,6 +76,8 @@ export default function captainBridge(pi: ExtensionAPI) {
       sessionId: ctx.sessionManager.getSessionId(),
       boundAt: new Date().toISOString(),
     };
+    resultReadyEmitted = false;
+    resultReadyPending = false;
 
     try {
       pi.appendEntry("captain-bridge-binding", binding);
@@ -85,8 +92,10 @@ export default function captainBridge(pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
-    await emit("agent-settled", ctx);
     if (!binding) return;
+    await emit("agent-settled", ctx);
+    if (resultReadyEmitted || resultReadyPending) return;
+    resultReadyPending = true;
 
     const resultPath = join(binding.ship, "assignments", binding.assignment, "result.md");
     try {
@@ -94,13 +103,16 @@ export default function captainBridge(pi: ExtensionAPI) {
         notify(ctx, `${resultPath} is not a file`);
         return;
       }
+      if (await emit("result-ready", ctx)) {
+        resultReadyEmitted = true;
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         notify(ctx, `could not check ${resultPath}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      return;
+    } finally {
+      resultReadyPending = false;
     }
-    await emit("result-ready", ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

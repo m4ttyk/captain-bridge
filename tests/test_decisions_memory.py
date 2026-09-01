@@ -2,9 +2,13 @@ import json
 import tempfile
 import tomllib
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
-from captain_bridge.decisions import request_decision, resolve_decision, review_decision
+import captain_bridge.decisions as decisions_module
+import captain_bridge.memory as memory_module
+from captain_bridge.decisions import pending_decisions, request_decision, resolve_decision, review_decision
 from captain_bridge.domain import ConflictError
 from captain_bridge.memory import inspect_memory, record_memory, search_memory
 
@@ -82,6 +86,24 @@ class DecisionTests(unittest.TestCase):
         self.assertIsNotNone(reviewed["reviewedAt"])
         with self.assertRaises(ConflictError):
             review_decision(self.ship, decision["id"], note="A different review.")
+    def test_resolution_rechecks_and_writes_under_decision_lock(self):
+        decision = request_decision(
+            self.ship,
+            question="Lock this decision?",
+            mode="approval-required",
+            confidence="high",
+            assignment_id=None,
+        )
+        with patch("captain_bridge.decisions.Storage.file_lock", return_value=nullcontext()) as lock:
+            resolve_decision(
+                self.ship,
+                decision["id"],
+                answer="Yes",
+                resolved_by="captain",
+                rationale="confirmed",
+            )
+        self.assertEqual(lock.call_args.args[0], (self.ship / "decisions.lock").resolve())
+
 
     def test_override_is_a_new_record_and_keeps_original_history(self):
         original = request_decision(
@@ -103,6 +125,73 @@ class DecisionTests(unittest.TestCase):
         self.assertNotEqual(override["id"], original["id"])
         self.assertEqual(override["supersedes"], original["id"])
         self.assertEqual(original_path.read_text(encoding="utf-8"), original_text)
+
+    def test_supersession_rejects_fan_out(self):
+        original = request_decision(
+            self.ship,
+            question="Choose A?",
+            mode="autonomous",
+            confidence="medium",
+        )
+        request_decision(
+            self.ship,
+            question="Choose B instead?",
+            mode="reviewable",
+            confidence="high",
+            supersedes=original["id"],
+        )
+
+        with self.assertRaises(ConflictError):
+            request_decision(
+                self.ship,
+                question="Choose C instead?",
+                mode="approval-required",
+                confidence="low",
+                supersedes=original["id"],
+            )
+
+    def test_locked_recheck_rejects_successor_appearing_after_precheck(self):
+        original = request_decision(
+            self.ship, question="Choose A?", mode="autonomous", confidence="medium"
+        )
+        successor = {"id": "decision_successor", "supersedes": original["id"], "createdAt": "later"}
+        with patch.object(
+            decisions_module,
+            "_all_decisions",
+            side_effect=[[], [original, successor]],
+        ):
+            with self.assertRaises(ConflictError):
+                request_decision(
+                    self.ship,
+                    question="Choose B instead?",
+                    mode="reviewable",
+                    confidence="high",
+                    supersedes=original["id"],
+                )
+
+    def test_pending_decisions_are_chronological(self):
+        assignment_id = "assignment_23456789"
+        first = request_decision(
+            self.ship,
+            question="First?",
+            mode="autonomous",
+            confidence="low",
+            assignment_id=assignment_id,
+        )
+        second = request_decision(
+            self.ship,
+            question="Second?",
+            mode="reviewable",
+            confidence="high",
+            assignment_id=assignment_id,
+        )
+        first_path = self.ship / "decisions" / f"{first['id']}.json"
+        second_path = self.ship / "decisions" / f"{second['id']}.json"
+        first["createdAt"], second["createdAt"] = "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"
+        first_path.write_text(json.dumps(first), encoding="utf-8")
+        second_path.write_text(json.dumps(second), encoding="utf-8")
+
+        self.assertEqual(pending_decisions(self.ship, assignment_id), [first, second])
 
 
 class MemoryTests(unittest.TestCase):
@@ -157,6 +246,35 @@ class MemoryTests(unittest.TestCase):
         historical = inspect_memory(original["id"], home=self.home)
         self.assertEqual(historical["supersededBy"], replacement["id"])
         self.assertEqual(historical["status"], "active")
+
+    def test_supersession_rejects_fan_out(self):
+        original = self._record()
+        self._record(
+            title="Portable worktree import setup",
+            symptom="A worktree command cannot import the package.",
+            supersedes=original["id"],
+        )
+
+        with self.assertRaises(ConflictError):
+            self._record(
+                title="Another portable import setup",
+                symptom="The package remains unavailable in a worktree.",
+                supersedes=original["id"],
+            )
+
+    def test_locked_recheck_rejects_successor_appearing_after_precheck(self):
+        original = self._record()
+        successor = {"id": "memory_successor", "supersedes": original["id"], "createdAt": "later"}
+        with patch.object(
+            memory_module,
+            "_all_memories",
+            side_effect=[[], [original, successor]],
+        ):
+            with self.assertRaises(ConflictError):
+                self._record(
+                    title="Another portable import setup",
+                    supersedes=original["id"],
+                )
 
 
 if __name__ == "__main__":

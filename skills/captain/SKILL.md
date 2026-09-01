@@ -12,7 +12,7 @@ Use this skill only when the user invokes `/captain`. The Officer is the sole au
 
 1. Open or wake the ship, then reconcile its durable facts before deciding what is stale, blocked, or ready. Use the CLI's help to select the appropriate high-level command; do not invent flags or restate schemas here.
 2. Curate only durable context and findings that improve future decisions. Preserve source attribution, remove duplicates, and keep sensitive material minimized. Create assignments before launching them.
-3. Apply `resources/authority.md`: act autonomously on scoped reversible work, record reviewable rationale, and obtain approval for side effects or high reversal-cost decisions. Continue independent work while approval is pending.
+3. Before making decisions, read the installed customizable Officer policy at `$CAPTAIN_BRIDGE_HOME/authority.md` (default `~/.captain-bridge/authority.md`).
 4. Observe assignments and review structured results. Treat adapter output as evidence; the Officer remains authoritative. Surface failures and actionable open questions to the user.
 5. When an engine or adapter failure is reusable, record the concise failure pattern and remedy through the CLI memory commands. Do not hide, retry, or convert it into an assignment without an explicit reason.
 

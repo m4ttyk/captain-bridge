@@ -67,7 +67,7 @@ Run `captain --help` and `captain <group> --help` for the complete command surfa
 
 ## State and customization
 
-Durable state defaults to `~/.captain-bridge/ships/`. Set `CAPTAIN_BRIDGE_HOME` to relocate it and `CAPTAIN_BRIDGE_SHIP` to select a ship. On first use, default authority and role files are copied into `~/.captain-bridge/` and `~/.captain-bridge/roles/`; edit those local copies to customize policy and role prompts. `CAPTAIN_BRIDGE_OFFICER_NAME` and `CAPTAIN_BRIDGE_OFFICER_ID` customize the Officer identity recorded for new or opened ships.
+Durable state defaults to `~/.captain-bridge/ships/`. Set `CAPTAIN_BRIDGE_HOME` to relocate it and `CAPTAIN_BRIDGE_SHIP` to select a ship. On first use, default authority and role files are copied into `$CAPTAIN_BRIDGE_HOME` (default `~/.captain-bridge/`); customize the Officer policy in `$CAPTAIN_BRIDGE_HOME/authority.md` (default `~/.captain-bridge/authority.md`) and role prompts in `$CAPTAIN_BRIDGE_HOME/roles/`. `CAPTAIN_BRIDGE_OFFICER_NAME` and `CAPTAIN_BRIDGE_OFFICER_ID` customize the Officer identity recorded for new or opened ships.
 
 ## Tests
 
