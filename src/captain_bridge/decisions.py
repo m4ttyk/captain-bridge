@@ -17,14 +17,9 @@ from .domain import (
 from .storage import Storage
 
 
-def _required(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise ValidationError(f"{label} must be text")
-    return require_text(value, label)
-
 
 def _optional(value: object | None, label: str) -> str | None:
-    return None if value is None else _required(value, label)
+    return None if value is None else require_text(value, label)
 
 
 def _entity_id(value: object, kind: str) -> str:
@@ -82,9 +77,9 @@ def request_decision(
 ) -> dict[str, Any]:
     storage = Storage()
     ship = storage.resolve_ship(ship)
-    question = _required(question, "question")
-    confidence = _required(confidence, "confidence")
-    mode = decision_mode(confidence, _required(mode, "decision mode"))
+    question = require_text(question, "question")
+    confidence = require_text(confidence, "confidence")
+    mode = decision_mode(confidence, require_text(mode, "decision mode"))
     if not isinstance(blocks_further_dependent_work, bool):
         raise ValidationError("blocksFurtherDependentWork must be a boolean")
 
@@ -166,9 +161,9 @@ def resolve_decision(
     with storage.file_lock((ship / "decisions.lock").resolve()):
         record = _read_decision(storage, path, decision_id)
         resolution = {
-            "answer": _required(answer, "answer"),
-            "resolvedBy": _required(resolved_by, "resolvedBy"),
-            "rationale": _required(rationale, "rationale"),
+            "answer": require_text(answer, "answer"),
+            "resolvedBy": require_text(resolved_by, "resolvedBy"),
+            "rationale": require_text(rationale, "rationale"),
         }
         if record.get("status") == "resolved":
             if all(record.get(key) == value for key, value in resolution.items()):

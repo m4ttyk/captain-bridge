@@ -211,9 +211,7 @@ def _teardown_launch(repo: Path, pane_id: str | None, worktree: Path | None) -> 
 def launch_assignment(
     ship_dir: str | Path,
     assignment: dict[str, Any],
-    role: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    del role
     ship = Path(ship_dir).expanduser().resolve()
     assignment_id = validate_id(str(_field(assignment, "id", "assignment_id", "assignmentId") or ""), "assignment")
     agent_name = _agent_name(assignment_id)

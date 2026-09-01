@@ -113,7 +113,9 @@ def child_path(root: Path, *parts: str) -> Path:
     return path
 
 
-def require_text(value: str, label: str) -> str:
+def require_text(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{label} must be text")
     value = value.strip()
     if not value:
         raise ValidationError(f"{label} must not be empty")

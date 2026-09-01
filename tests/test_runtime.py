@@ -47,7 +47,6 @@ class RuntimeTests(unittest.TestCase):
             "model": "test-model",
             "effort": "low",
         }
-        self.role = {"repository": "worktree", "model": "wrong-model", "effort": "high"}
 
     @patch("captain_bridge.runtime.subprocess.run")
     def test_read_launch_uses_repo_dir_and_submits_prompt_without_waiting(self, run):
@@ -59,7 +58,7 @@ class RuntimeTests(unittest.TestCase):
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
         ]
 
-        facts = launch_assignment(self.ship, self.assignment, self.role)
+        facts = launch_assignment(self.ship, self.assignment)
 
         self.assertEqual(facts["agentName"], ASSIGNMENT_ID)
         self.assertEqual(facts["paneId"], "w1:p2")
@@ -89,10 +88,9 @@ class RuntimeTests(unittest.TestCase):
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
         ]
         assignment = {**self.assignment, "repository": "worktree"}
-        role = {**self.role, "repository": "read"}
         expected = (self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID).resolve()
 
-        facts = launch_assignment(self.ship, assignment, role)
+        facts = launch_assignment(self.ship, assignment)
 
         self.assertEqual(facts["worktreeDir"], str(expected))
         self.assertEqual(
@@ -121,7 +119,7 @@ class RuntimeTests(unittest.TestCase):
             {"result": {"agent": {"name": ASSIGNMENT_ID, "pane_id": "w1:p2"}}}
         )
 
-        self.assertEqual(launch_assignment(self.ship, assignment, self.role), facts)
+        self.assertEqual(launch_assignment(self.ship, assignment), facts)
         run.assert_called_once()
 
     @patch("captain_bridge.runtime.subprocess.run")
@@ -129,7 +127,7 @@ class RuntimeTests(unittest.TestCase):
         assignment = {**self.assignment, "runtime": {"agentName": ASSIGNMENT_ID}}
 
         with self.assertRaises(ConflictError):
-            launch_assignment(self.ship, assignment, self.role)
+            launch_assignment(self.ship, assignment)
         run.assert_not_called()
 
     @patch("captain_bridge.runtime.subprocess.run")

@@ -28,11 +28,6 @@ _HEADINGS = (
 )
 
 
-def _required(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise ValidationError(f"{label} must be text")
-    return require_text(value, label)
-
 
 def _memory_id(value: object) -> str:
     if not isinstance(value, str):
@@ -154,15 +149,15 @@ def record_memory(
     home: str | Path | None = None,
 ) -> dict[str, Any]:
     storage = _storage(home)
-    title = _required(title, "title")
-    area = slugify(_required(area, "area"))
+    title = require_text(title, "title")
+    area = slugify(require_text(area, "area"))
     sections = {
-        "symptom": _required(symptom, "symptom"),
-        "context": _required(context, "context"),
-        "cause": _required(cause, "cause"),
-        "workaround": _required(workaround, "workaround"),
-        "evidence": _required(evidence, "evidence"),
-        "followUp": _required(follow_up, "follow-up"),
+        "symptom": require_text(symptom, "symptom"),
+        "context": require_text(context, "context"),
+        "cause": require_text(cause, "cause"),
+        "workaround": require_text(workaround, "workaround"),
+        "evidence": require_text(evidence, "evidence"),
+        "followUp": require_text(follow_up, "follow-up"),
     }
     if supersedes is not None:
         supersedes = _memory_id(supersedes)
@@ -205,7 +200,7 @@ def search_memory(
     if not isinstance(query, str):
         raise ValidationError("query must be text")
     needle = query.strip().casefold()
-    area = slugify(_required(area, "area")) if area is not None else None
+    area = slugify(require_text(area, "area")) if area is not None else None
     records = _all_memories(_storage(home))
     superseded = _superseded_by(records)
     results = [
