@@ -23,7 +23,7 @@ class StorageShipTests(unittest.TestCase):
         p = self.path / "x.json"
         s.atomic_write_json(p, {"a": 1})
         self.assertEqual(json.loads(p.read_text()), {"a": 1})
-        with self.assertRaises(Exception):
+        with self.assertRaises(ConflictError):
             s.exclusive_write_json(p, {"a": 2})
 
     def test_ship_reopen(self):

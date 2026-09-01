@@ -154,7 +154,12 @@ class DecisionTests(unittest.TestCase):
         original = request_decision(
             self.ship, question="Choose A?", mode="autonomous", confidence="medium"
         )
-        successor = {"id": "decision_successor", "supersedes": original["id"], "createdAt": "later"}
+        successor = {
+            **original,
+            "id": "decision_successor",
+            "supersedes": original["id"],
+            "createdAt": "2026-01-02T00:00:00Z",
+        }
         with patch.object(
             decisions_module,
             "_all_decisions",
@@ -171,25 +176,25 @@ class DecisionTests(unittest.TestCase):
 
     def test_pending_decisions_are_chronological(self):
         assignment_id = "assignment_23456789"
-        first = request_decision(
-            self.ship,
-            question="First?",
-            mode="autonomous",
-            confidence="low",
-            assignment_id=assignment_id,
-        )
-        second = request_decision(
-            self.ship,
-            question="Second?",
-            mode="reviewable",
-            confidence="high",
-            assignment_id=assignment_id,
-        )
-        first_path = self.ship / "decisions" / f"{first['id']}.json"
-        second_path = self.ship / "decisions" / f"{second['id']}.json"
-        first["createdAt"], second["createdAt"] = "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"
-        first_path.write_text(json.dumps(first), encoding="utf-8")
-        second_path.write_text(json.dumps(second), encoding="utf-8")
+        with patch.object(
+            decisions_module,
+            "now",
+            side_effect=["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"],
+        ):
+            first = request_decision(
+                self.ship,
+                question="First?",
+                mode="autonomous",
+                confidence="low",
+                assignment_id=assignment_id,
+            )
+            second = request_decision(
+                self.ship,
+                question="Second?",
+                mode="reviewable",
+                confidence="high",
+                assignment_id=assignment_id,
+            )
 
         self.assertEqual(pending_decisions(self.ship, assignment_id), [first, second])
 
@@ -264,7 +269,12 @@ class MemoryTests(unittest.TestCase):
 
     def test_locked_recheck_rejects_successor_appearing_after_precheck(self):
         original = self._record()
-        successor = {"id": "memory_successor", "supersedes": original["id"], "createdAt": "later"}
+        successor = {
+            **original,
+            "id": "memory_successor",
+            "supersedes": original["id"],
+            "createdAt": "2026-01-02T00:00:00Z",
+        }
         with patch.object(
             memory_module,
             "_all_memories",

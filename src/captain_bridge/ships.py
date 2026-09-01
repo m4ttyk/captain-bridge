@@ -8,20 +8,53 @@ from .domain import ConflictError, ValidationError, new_id, now, validate_slug
 from .storage import Storage
 
 
-def _repo(path: str | Path) -> Path:
-    repo = Path(path).expanduser().resolve()
-    if not (repo / ".git").exists():
-        raise ValidationError(f"not a Git worktree: {repo}")
-    return repo
+def _require_git_worktree(path: str | Path) -> Path:
+    repository = Path(path).expanduser().resolve()
+    if not (repository / ".git").exists():
+        raise ValidationError(f"not a Git worktree: {repository}")
+    return repository
 
 
-def _officer() -> dict[str, str]:
+def _officer_from_environment() -> dict[str, str]:
     officer: dict[str, str] = {}
     if os.environ.get("CAPTAIN_BRIDGE_OFFICER_NAME"):
         officer["agentName"] = os.environ["CAPTAIN_BRIDGE_OFFICER_NAME"]
     if os.environ.get("CAPTAIN_BRIDGE_OFFICER_ID"):
         officer["paneId"] = os.environ["CAPTAIN_BRIDGE_OFFICER_ID"]
     return officer
+
+
+def _read_decision_records(ship: Path) -> list[dict[str, Any]]:
+    import json
+
+    records: list[dict[str, Any]] = []
+    for path in sorted((ship / "decisions").glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValidationError(f"invalid decision record: {path}") from exc
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _project_summary(
+    assignment_views: list[dict[str, Any]],
+    pending_decisions: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "assignmentCount": len(assignment_views),
+        "pendingDecisionCount": len(pending_decisions),
+        "eventCount": len(events),
+        "resultReadyCount": sum(view.get("status") == "result-ready" for view in assignment_views),
+        "integratedCount": sum(view.get("status") == "integrated" for view in assignment_views),
+        "worktreeCount": sum(bool(view.get("worktreeExists")) for view in assignment_views),
+        "attentionRequired": bool(
+            pending_decisions
+            or any(view.get("status") in {"result-ready", "failed"} for view in assignment_views)
+        ),
+    }
 
 def create_ship(
     repo: str | Path,
@@ -32,7 +65,7 @@ def create_ship(
 ) -> dict[str, Any]:
     storage = storage or Storage()
     storage.ensure_defaults()
-    repository = _repo(repo)
+    repository = _require_git_worktree(repo)
     validate_slug(slug)
     ship_id = new_id("ship")
     ship = storage.ships_dir / f"{repository.name}-{slug}"
@@ -50,7 +83,10 @@ def create_ship(
             (staging / name).mkdir()
         storage.exclusive_write_json(staging / "metadata.json", metadata)
         storage.atomic_write_text(staging / "index.md", f"# {metadata['name']}\n")
-        storage.exclusive_write_json(staging / "officer.json", officer if officer is not None else _officer())
+        storage.exclusive_write_json(
+            staging / "officer.json",
+            officer if officer is not None else _officer_from_environment(),
+        )
     return reconcile(ship, storage=storage)
 
 
@@ -67,7 +103,7 @@ def open_ship(path: str | Path | None = None, *, storage: Storage | None = None)
         raise ValidationError(f"ship repository missing: {repo}")
     officer_path = ship / "officer.json"
     officer = storage.read_json(officer_path) if officer_path.exists() else {}
-    current = _officer()
+    current = _officer_from_environment()
     if current and current != officer:
         officer = current
         storage.atomic_write_json(officer_path, officer)
@@ -104,27 +140,10 @@ def reconcile(path: str | Path, *, storage: Storage | None = None) -> dict[str, 
         if directory.is_dir() and (directory / "assignment.json").exists():
             assignment_views.append(assignments.inspect_assignment(ship, directory.name))
 
-    decision_records = []
-    import json
-
-    for decision_path in sorted((ship / "decisions").glob("*.json")):
-        try:
-            record = json.loads(decision_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValidationError(f"invalid decision record: {decision_path}") from exc
-        if isinstance(record, dict):
-            decision_records.append(record)
+    decision_records = _read_decision_records(ship)
     pending = decisions.pending_decisions(ship, assignment_id=None)
     events = _all_events(ship)
-    summary = {
-        "assignmentCount": len(assignment_views),
-        "pendingDecisionCount": len(pending),
-        "eventCount": len(events),
-        "resultReadyCount": sum(view.get("status") == "result-ready" for view in assignment_views),
-        "integratedCount": sum(view.get("status") == "integrated" for view in assignment_views),
-        "worktreeCount": sum(bool(view.get("worktreeExists")) for view in assignment_views),
-        "attentionRequired": bool(pending or any(view.get("status") in {"result-ready", "failed"} for view in assignment_views)),
-    }
+    summary = _project_summary(assignment_views, pending, events)
     return {
         "shipId": metadata["shipId"],
         "name": metadata.get("name", ship.name),

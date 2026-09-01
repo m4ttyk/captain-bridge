@@ -92,34 +92,34 @@ class AssignmentTests(unittest.TestCase):
     def test_launch_persists_opaque_runtime_binding_and_is_idempotent(self):
         ship, _ = self.assignment_env
         record = self.create()
-        facts = {
+        binding = {
             "agentName": "builder-1",
             "paneId": "w1:p2",
             "worktreeDir": "/tmp/worktree",
             "launchedAt": "2026-01-01T00:00:00Z",
             "adapterFact": 7,
         }
-        launch = lambda ship_arg, assignment: facts
+        launch = lambda ship_arg, assignment: binding
         mocked = SimpleNamespace(launch_assignment=Mock(side_effect=launch))
         self.patch_runtime(mocked)
 
-        assert assignments.launch_assignment(ship, record["id"]) == facts
-        assert assignments.launch_assignment(ship, record["id"]) == facts
+        assert assignments.launch_assignment(ship, record["id"]) == binding
+        assert assignments.launch_assignment(ship, record["id"]) == binding
         assert mocked.launch_assignment.call_count == 2
         assert mocked.launch_assignment.call_args.args[1]["model"] == "test"
         saved = json.loads((ship / "assignments" / record["id"] / "assignment.json").read_text())
-        assert saved["runtime"] == facts
+        assert saved["runtime"] == binding
         assert "status" not in saved
     def test_launch_serializes_per_assignment_with_file_lock(self):
         ship, _ = self.assignment_env
         record = self.create()
-        facts = {
+        binding = {
             "agentName": "builder-1",
             "paneId": "w1:p2",
             "worktreeDir": "/tmp/worktree",
             "launchedAt": "2026-01-01T00:00:00Z",
         }
-        self.patch_runtime(SimpleNamespace(launch_assignment=Mock(return_value=facts)))
+        self.patch_runtime(SimpleNamespace(launch_assignment=Mock(return_value=binding)))
 
         with patch.object(Storage, "file_lock", return_value=nullcontext()) as lock:
             assignments.launch_assignment(ship, record["id"])
@@ -132,61 +132,62 @@ class AssignmentTests(unittest.TestCase):
     def test_launch_recovers_after_stale_launch_intent(self):
         ship, _ = self.assignment_env
         record = self.create()
-        facts = {
+        binding = {
             "agentName": "builder-1",
             "paneId": "w1:p2",
             "worktreeDir": "/tmp/worktree",
             "launchedAt": "2026-01-01T00:00:00Z",
         }
         mocked = SimpleNamespace(
-            launch_assignment=Mock(side_effect=[RuntimeError("adapter failed"), facts])
+            launch_assignment=Mock(side_effect=[RuntimeError("adapter failed"), binding])
         )
         self.patch_runtime(mocked)
 
         with self.assertRaisesRegex(OperationError, "adapter failed"):
             assignments.launch_assignment(ship, record["id"])
-        assert assignments.launch_assignment(ship, record["id"]) == facts
+        assert assignments.launch_assignment(ship, record["id"]) == binding
         assert mocked.launch_assignment.call_count == 2
         assert json.loads(
             (ship / "assignments" / record["id"] / "launch.json").read_text()
         )["assignmentId"] == record["id"]
+
     def test_launch_replaces_stale_binding_via_runtime(self):
         ship, _ = self.assignment_env
         record = self.create()
         directory = ship / "assignments" / record["id"]
-        old_facts = {
+        old_binding = {
             "agentName": "old",
             "paneId": "old-pane",
             "worktreeDir": "/tmp/old",
             "launchedAt": "2026-01-01T00:00:00Z",
         }
-        new_facts = {
+        new_binding = {
             "agentName": "new",
             "paneId": "new-pane",
             "worktreeDir": "/tmp/new",
             "launchedAt": "2026-01-02T00:00:00Z",
         }
-        record["runtime"] = old_facts
+        record["runtime"] = old_binding
         (directory / "assignment.json").write_text(json.dumps(record))
-        mocked = SimpleNamespace(launch_assignment=Mock(return_value=new_facts))
+        mocked = SimpleNamespace(launch_assignment=Mock(return_value=new_binding))
         self.patch_runtime(mocked)
 
-        assert assignments.launch_assignment(ship, record["id"]) == new_facts
+        assert assignments.launch_assignment(ship, record["id"]) == new_binding
         assert mocked.launch_assignment.call_count == 1
-        assert json.loads((directory / "assignment.json").read_text())["runtime"] == new_facts
+        assert json.loads((directory / "assignment.json").read_text())["runtime"] == new_binding
 
     def test_launch_uses_snapshotted_role_after_role_changes(self):
         ship, _ = self.assignment_env
         record = self.create()
         role_path = Path(self._tmp.name) / "home" / "roles" / "builder.md"
         role_path.write_text('+++\nmodel = "changed"\neffort = "high"\nrepository = "read"\n+++\nChanged.\n')
-        facts = {
+        binding = {
             "agentName": "builder-1",
             "paneId": "w1:p2",
             "worktreeDir": "/tmp/worktree",
             "launchedAt": "2026-01-01T00:00:00Z",
         }
-        mocked = SimpleNamespace(launch_assignment=Mock(return_value=facts))
+        mocked = SimpleNamespace(launch_assignment=Mock(return_value=binding))
         self.patch_runtime(mocked)
 
         assignments.launch_assignment(ship, record["id"])
@@ -229,8 +230,7 @@ class AssignmentTests(unittest.TestCase):
         assert view["worktreeExists"] is True
         assert "status" not in json.loads((directory / "assignment.json").read_text())
 
-
-    def test_message_uses_assignment_runtime_facts(self):
+    def test_message_uses_assignment_runtime_binding(self):
         ship, _ = self.assignment_env
         record = self.create()
         directory = ship / "assignments" / record["id"]

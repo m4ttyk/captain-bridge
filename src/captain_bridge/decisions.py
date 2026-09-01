@@ -19,14 +19,14 @@ from .storage import Storage
 
 
 
-def _entity_id(value: object, kind: str) -> str:
+def _validated_id(value: object, kind: str) -> str:
     if not isinstance(value, str):
         raise ValidationError(f"{kind} ID must be text")
     return validate_id(value, kind)
 
 
 def _decision_path(ship: Path, decision_id: str) -> Path:
-    return ship / "decisions" / f"{_entity_id(decision_id, 'decision')}.json"
+    return ship / "decisions" / f"{_validated_id(decision_id, 'decision')}.json"
 
 
 def _read_decision(storage: Storage, path: Path, decision_id: str) -> dict[str, Any]:
@@ -44,20 +44,26 @@ def _all_decisions(storage: Storage, ship: Path) -> list[dict[str, Any]]:
     if not directory.exists():
         return []
     return [
-        _read_decision(storage, path, _entity_id(path.stem, "decision"))
+        _read_decision(storage, path, _validated_id(path.stem, "decision"))
         for path in sorted(directory.glob("*.json"))
     ]
 
 
-def _superseded_by(records: list[dict[str, Any]]) -> dict[str, str]:
-    links: dict[str, str] = {}
+def _successor_by_predecessor(records: list[dict[str, Any]]) -> dict[str, str]:
+    successors: dict[str, str] = {}
     for record in records:
-        target = record.get("supersedes")
-        if target is not None:
-            if target in links:
-                raise OperationError(f"decision {target} has multiple successors")
-            links[target] = record["id"]
-    return links
+        predecessor = record.get("supersedes")
+        if predecessor is not None:
+            if predecessor in successors:
+                raise OperationError(f"decision {predecessor} has multiple successors")
+            successors[predecessor] = record["id"]
+    return successors
+
+
+def _require_supersession_available(storage: Storage, ship: Path, predecessor: str) -> None:
+    _read_decision(storage, _decision_path(ship, predecessor), predecessor)
+    if predecessor in _successor_by_predecessor(_all_decisions(storage, ship)):
+        raise ConflictError(f"decision {predecessor} already has a successor")
 
 
 def request_decision(
@@ -80,16 +86,14 @@ def request_decision(
     if not isinstance(blocks_further_dependent_work, bool):
         raise ValidationError("blocksFurtherDependentWork must be a boolean")
 
-    assignment_id = _entity_id(assignment_id, "assignment") if assignment_id is not None else None
+    assignment_id = _validated_id(assignment_id, "assignment") if assignment_id is not None else None
     if affected_assignments is not None and not isinstance(affected_assignments, list):
         raise ValidationError("affectedAssignments must be a list")
-    affected = [_entity_id(item, "assignment") for item in affected_assignments or []]
+    affected = [_validated_id(item, "assignment") for item in affected_assignments or []]
     impact = None if impact is None else require_text(impact, "impact")
     if supersedes is not None:
-        supersedes = _entity_id(supersedes, "decision")
-        _read_decision(storage, _decision_path(ship, supersedes), supersedes)
-        if supersedes in _superseded_by(_all_decisions(storage, ship)):
-            raise ConflictError(f"decision {supersedes} already has a successor")
+        supersedes = _validated_id(supersedes, "decision")
+        _require_supersession_available(storage, ship, supersedes)
 
     decision_id = new_id("decision")
     record: dict[str, Any] = {
@@ -113,9 +117,7 @@ def request_decision(
     }
     if supersedes is not None:
         with storage.file_lock(ship / "decisions.lock"):
-            _read_decision(storage, _decision_path(ship, supersedes), supersedes)
-            if supersedes in _superseded_by(_all_decisions(storage, ship)):
-                raise ConflictError(f"decision {supersedes} already has a successor")
+            _require_supersession_available(storage, ship, supersedes)
             storage.exclusive_write_json(_decision_path(ship, decision_id), record)
     else:
         storage.exclusive_write_json(_decision_path(ship, decision_id), record)
@@ -128,13 +130,13 @@ def pending_decisions(
 ) -> list[dict[str, Any]]:
     storage = Storage()
     ship = storage.resolve_ship(ship)
-    assignment_id = _entity_id(assignment_id, "assignment") if assignment_id is not None else None
+    assignment_id = _validated_id(assignment_id, "assignment") if assignment_id is not None else None
     records = _all_decisions(storage, ship)
-    superseded = _superseded_by(records)
+    successor_by_predecessor = _successor_by_predecessor(records)
     pending = [
         record
         for record in records
-        if record["id"] not in superseded
+        if record["id"] not in successor_by_predecessor
         and (assignment_id is None or record.get("assignmentId") == assignment_id)
         and (
             record.get("answer") is None

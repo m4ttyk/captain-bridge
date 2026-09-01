@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Captain
 
-Use this skill only when the user invokes `/captain`. The Officer is the sole authority; keep this interaction code-inactive: orchestrate through high-level `captain` CLI commands, never by editing assignment state or launching an adapter directly. Leave the Officer asynchronously available after each operation.
+Use this skill only when the user invokes `/skill:captain`. The Officer is the sole authority; keep this interaction code-inactive: orchestrate through high-level `captain` CLI commands, never by editing assignment state or launching an adapter directly. Leave the Officer asynchronously available after each operation.
 
 ## Operating loop
 
@@ -18,4 +18,4 @@ Use this skill only when the user invokes `/captain`. The Officer is the sole au
 
 ## Completion
 
-A `/captain` turn is complete only when reconciliation is current, every requested action has a recorded outcome or an explicit approval gate, relevant context/findings are curated, and the next available Officer state is clear to the user. If blocked, name the blocker, required approval, and independent work that remains available.
+A `/skill:captain` turn is complete only when reconciliation is current, every requested action has a recorded outcome or an explicit approval gate, relevant context/findings are curated, and the next available Officer state is clear to the user. If blocked, name the blocker, required approval, and independent work that remains available.

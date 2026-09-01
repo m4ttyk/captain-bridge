@@ -8,7 +8,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from .domain import ConflictError, NotFoundError, OperationError, ValidationError
+from .domain import ConflictError, NotFoundError, OperationError, ValidationError, new_id
 
 
 class Storage:
@@ -123,6 +123,6 @@ class Storage:
         path.mkdir(parents=True, exist_ok=True)
         event_id = event.get("id")
         if not event_id:
-            event_id = __import__("captain_bridge.domain", fromlist=["new_id"]).new_id("event")
-            event["id"] = event_id
+            event["id"] = new_id("event")
+            event_id = event["id"]
         self.exclusive_write_json(path / f"{event_id}.json", event)

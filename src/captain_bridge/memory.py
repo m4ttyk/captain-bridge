@@ -40,7 +40,7 @@ def _memory_dir(storage: Storage) -> Path:
     return storage.home_dir / "memory"
 
 
-def _render(record: dict[str, Any]) -> str:
+def _serialize_memory(record: dict[str, Any]) -> str:
     frontmatter = [
         "+++",
         f"id = {json.dumps(record['id'], ensure_ascii=False)}",
@@ -57,7 +57,7 @@ def _render(record: dict[str, Any]) -> str:
     return "\n".join(frontmatter)
 
 
-def _read_path(path: Path) -> dict[str, Any]:
+def _parse_memory_document(path: Path) -> tuple[dict[str, Any], dict[str, str]]:
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -90,9 +90,12 @@ def _read_path(path: Path) -> dict[str, Any]:
         if not value:
             raise OperationError(f"memory section {key} is empty: {path}")
         sections[key] = value
+    return metadata, sections
 
-    required_metadata = ("id", "title", "area", "status", "createdAt")
-    if any(not isinstance(metadata.get(key), str) or not metadata[key] for key in required_metadata):
+
+def _validate_memory_metadata(path: Path, metadata: dict[str, Any]) -> None:
+    required = ("id", "title", "area", "status", "createdAt")
+    if any(not isinstance(metadata.get(key), str) or not metadata[key] for key in required):
         raise OperationError(f"invalid memory metadata: {path}")
     if metadata["id"] != path.stem or metadata["status"] != "active":
         raise OperationError(f"invalid memory metadata: {path}")
@@ -103,6 +106,10 @@ def _read_path(path: Path) -> dict[str, Any]:
     except (TypeError, ValidationError) as exc:
         raise OperationError(f"invalid memory metadata: {path}") from exc
 
+
+def _parse_memory_file(path: Path) -> dict[str, Any]:
+    metadata, sections = _parse_memory_document(path)
+    _validate_memory_metadata(path, metadata)
     return {
         "id": metadata["id"],
         "title": metadata["title"],
@@ -114,22 +121,30 @@ def _read_path(path: Path) -> dict[str, Any]:
     }
 
 
+
+
 def _all_memories(storage: Storage) -> list[dict[str, Any]]:
     directory = _memory_dir(storage)
     if not directory.exists():
         return []
-    return [_read_path(path) for path in sorted(directory.glob("memory_*.md"))]
+    return [_parse_memory_file(path) for path in sorted(directory.glob("memory_*.md"))]
 
 
-def _superseded_by(records: list[dict[str, Any]]) -> dict[str, str]:
-    links: dict[str, str] = {}
+def _successor_by_predecessor(records: list[dict[str, Any]]) -> dict[str, str]:
+    successors: dict[str, str] = {}
     for record in sorted(records, key=lambda item: (item["createdAt"], item["id"])):
-        target = record["supersedes"]
-        if target is not None:
-            if target in links:
-                raise OperationError(f"memory {target} has multiple successors")
-            links[target] = record["id"]
-    return links
+        predecessor = record["supersedes"]
+        if predecessor is not None:
+            if predecessor in successors:
+                raise OperationError(f"memory {predecessor} has multiple successors")
+            successors[predecessor] = record["id"]
+    return successors
+
+
+def _require_supersession_available(storage: Storage, predecessor: str) -> None:
+    _parse_memory_file(_memory_dir(storage) / f"{predecessor}.md")
+    if predecessor in _successor_by_predecessor(_all_memories(storage)):
+        raise ConflictError(f"memory {predecessor} already has a successor")
 
 
 def record_memory(
@@ -158,9 +173,7 @@ def record_memory(
     }
     if supersedes is not None:
         supersedes = _memory_id(supersedes)
-        _read_path(_memory_dir(storage) / f"{supersedes}.md")
-        if supersedes in _superseded_by(_all_memories(storage)):
-            raise ConflictError(f"memory {supersedes} already has a successor")
+        _require_supersession_available(storage, supersedes)
 
     memory_id = new_id("memory")
     path = _memory_dir(storage) / f"{memory_id}.md"
@@ -177,16 +190,13 @@ def record_memory(
     }
     if supersedes is not None:
         with storage.file_lock(_memory_dir(storage) / "memory.lock"):
-            _read_path(_memory_dir(storage) / f"{supersedes}.md")
-            if supersedes in _superseded_by(_all_memories(storage)):
-                raise ConflictError(f"memory {supersedes} already has a successor")
+            _require_supersession_available(storage, supersedes)
             if path.exists():
                 raise ConflictError(f"memory already exists: {memory_id}")
-            storage.atomic_write_text(path, _render(record))
+            storage.atomic_write_text(path, _serialize_memory(record))
     else:
-        storage.atomic_write_text(path, _render(record))
+        storage.atomic_write_text(path, _serialize_memory(record))
     return record
-
 
 def search_memory(
     query: str = "",
@@ -199,13 +209,13 @@ def search_memory(
     needle = query.strip().casefold()
     area = slugify(require_text(area, "area")) if area is not None else None
     records = _all_memories(Storage(home))
-    superseded = _superseded_by(records)
+    successor_by_predecessor = _successor_by_predecessor(records)
     results = [
         record
         for record in records
-        if record["id"] not in superseded
+        if record["id"] not in successor_by_predecessor
         and (area is None or record["area"].casefold() == area.casefold())
-        and (not needle or needle in _render(record).casefold())
+        and (not needle or needle in _serialize_memory(record).casefold())
     ]
     return sorted(results, key=lambda item: (item["createdAt"], item["id"]), reverse=True)
 
@@ -221,5 +231,5 @@ def inspect_memory(
     record = next((item for item in records if item["id"] == memory_id), None)
     if record is None:
         raise NotFoundError(f"memory not found: {memory_id}")
-    superseded_by = _superseded_by(records).get(memory_id)
-    return {**record, **({"supersededBy": superseded_by} if superseded_by else {})}
+    successor_id = _successor_by_predecessor(records).get(memory_id)
+    return {**record, **({"supersededBy": successor_id} if successor_id else {})}

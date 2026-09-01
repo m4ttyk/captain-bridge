@@ -58,11 +58,11 @@ class RuntimeTests(unittest.TestCase):
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
         ]
 
-        facts = launch_assignment(self.ship, self.assignment)
+        binding = launch_assignment(self.ship, self.assignment)
 
-        self.assertEqual(facts["agentName"], ASSIGNMENT_ID)
-        self.assertEqual(facts["paneId"], "w1:p2")
-        self.assertEqual(facts["worktreeDir"], str(self.repo.resolve()))
+        self.assertEqual(binding["agentName"], ASSIGNMENT_ID)
+        self.assertEqual(binding["paneId"], "w1:p2")
+        self.assertEqual(binding["worktreeDir"], str(self.repo.resolve()))
         split = run.call_args_list[2].args[0]
         self.assertIn(f"CAPTAIN_BRIDGE_SHIP={self.ship.resolve()}", split)
         self.assertIn(f"CAPTAIN_BRIDGE_ASSIGNMENT={ASSIGNMENT_ID}", split)
@@ -90,9 +90,9 @@ class RuntimeTests(unittest.TestCase):
         assignment = {**self.assignment, "repository": "worktree"}
         expected = (self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID).resolve()
 
-        facts = launch_assignment(self.ship, assignment)
+        binding = launch_assignment(self.ship, assignment)
 
-        self.assertEqual(facts["worktreeDir"], str(expected))
+        self.assertEqual(binding["worktreeDir"], str(expected))
         self.assertEqual(
             run.call_args_list[2].args[0],
             [
@@ -107,23 +107,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[2].kwargs["cwd"], self.repo.resolve())
 
     @patch("captain_bridge.runtime.subprocess.run")
-    def test_repeated_launch_returns_complete_live_facts_without_duplication(self, run):
-        facts = {
+    def test_repeated_launch_returns_complete_live_binding_without_duplication(self, run):
+        binding = {
             "agentName": ASSIGNMENT_ID,
             "paneId": "w1:p2",
             "worktreeDir": str(self.repo),
             "launchedAt": "2026-01-01T00:00:00Z",
         }
-        assignment = {**self.assignment, "runtime": facts}
+        assignment = {**self.assignment, "runtime": binding}
         run.return_value = completed(
             {"result": {"agent": {"name": ASSIGNMENT_ID, "pane_id": "w1:p2"}}}
         )
 
-        self.assertEqual(launch_assignment(self.ship, assignment), facts)
+        self.assertEqual(launch_assignment(self.ship, assignment), binding)
         run.assert_called_once()
 
+
     @patch("captain_bridge.runtime.subprocess.run")
-    def test_repeated_launch_rejects_partial_facts_before_subprocess(self, run):
+    def test_repeated_launch_rejects_partial_binding_before_subprocess(self, run):
         assignment = {**self.assignment, "runtime": {"agentName": ASSIGNMENT_ID}}
 
         with self.assertRaises(ConflictError):
@@ -193,7 +194,7 @@ class RuntimeTests(unittest.TestCase):
         run.assert_not_called()
 
     @patch("captain_bridge.runtime.subprocess.run")
-    def test_existing_agent_without_facts_is_ambiguous_partial_launch(self, run):
+    def test_existing_agent_without_binding_is_ambiguous_partial_launch(self, run):
         run.return_value = completed(
             {"result": {"agent": {"name": ASSIGNMENT_ID, "pane_id": "w1:p9"}}}
         )

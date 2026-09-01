@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Iterable
 
 READABLE_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
 ID_KINDS = {"ship", "assignment", "decision", "memory", "event"}
@@ -137,10 +137,8 @@ def derive_assignment_status(
     event_kinds: Iterable[str],
     has_result: bool,
     has_integration: bool,
-    runtime: dict[str, Any] | None = None,
 ) -> str:
-    """Derive status from durable facts, never a persisted runtime snapshot."""
-    del runtime
+    """Derive status from durable assignment records."""
     kinds = list(event_kinds)
     if "assignment-cleaned" in kinds:
         return "cleaned"

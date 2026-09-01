@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -16,7 +17,7 @@ from .domain import (
 )
 
 _AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-_FACT_KEYS = ("agentName", "paneId", "worktreeDir", "launchedAt")
+_BINDING_KEYS = ("agentName", "paneId", "worktreeDir", "launchedAt")
 _AGENT_STATES = {"working", "idle", "blocked", "done", "unknown", "stale"}
 _NOT_FOUND_CODES = {"agent_not_found", "agent-not-found", "not_found", "not-found"}
 
@@ -81,7 +82,7 @@ def _field(data: dict[str, Any], *names: str) -> Any:
     return None
 
 
-def _facts(assignment: dict[str, Any]) -> dict[str, Any]:
+def _binding(assignment: dict[str, Any]) -> dict[str, Any]:
     runtime = assignment.get("runtime")
     source = runtime if isinstance(runtime, dict) else assignment
     return {
@@ -145,16 +146,16 @@ def _prompt_path(ship_dir: Path, assignment: dict[str, Any], assignment_id: str)
     return path
 
 
-def _officer_target(ship_dir: Path, current: dict[str, Any]) -> str:
-    officer: dict[str, Any] = {}
+def _read_persisted_officer(ship_dir: Path) -> dict[str, Any]:
     try:
         loaded = json.loads((ship_dir / "officer.json").read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            officer = loaded
     except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    pane = current.get("pane") if isinstance(current.get("pane"), dict) else current
-    target = _field(
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _persisted_officer_target(officer: dict[str, Any]) -> Any:
+    return _field(
         officer,
         "agentName",
         "agent_name",
@@ -162,11 +163,27 @@ def _officer_target(ship_dir: Path, current: dict[str, Any]) -> str:
         "paneId",
         "pane_id",
         "CAPTAIN_BRIDGE_OFFICER_ID",
-    ) or _field(pane, "name", "pane_id", "paneId")
+    )
+
+
+def _environment_officer_target() -> Any:
+    return _field(os.environ, "CAPTAIN_BRIDGE_OFFICER_NAME", "CAPTAIN_BRIDGE_OFFICER_ID")
+
+
+def _current_pane_target(current: dict[str, Any]) -> Any:
+    pane = current.get("pane") if isinstance(current.get("pane"), dict) else current
+    return _field(pane, "name", "pane_id", "paneId")
+
+
+def _officer_target(ship_dir: Path, current: dict[str, Any]) -> str:
+    target = (
+        _persisted_officer_target(_read_persisted_officer(ship_dir))
+        or _environment_officer_target()
+        or _current_pane_target(current)
+    )
     if not isinstance(target, str) or not target:
         raise OperationError("current Officer could not be identified")
     return target
-
 
 def _create_worktree(repo: Path, assignment_id: str) -> Path:
     worktree = repo.parent / ".captain-bridge-worktrees" / assignment_id
@@ -185,6 +202,8 @@ def _create_worktree(repo: Path, assignment_id: str) -> Path:
     if created.returncode:
         raise OperationError(created.stderr.strip() or "could not create assignment worktree")
     return worktree
+
+
 def _teardown_launch(repo: Path, pane_id: str | None, worktree: Path | None) -> None:
     failures: list[str] = []
     if pane_id:
@@ -208,31 +227,28 @@ def _teardown_launch(repo: Path, pane_id: str | None, worktree: Path | None) -> 
 
 
 
-def launch_assignment(
-    ship_dir: str | Path,
-    assignment: dict[str, Any],
-) -> dict[str, Any]:
-    ship = Path(ship_dir).expanduser().resolve()
-    assignment_id = validate_id(str(_field(assignment, "id", "assignment_id", "assignmentId") or ""), "assignment")
-    agent_name = _agent_name(assignment_id)
-    repository_mode = assignment.get("repository")
-    if repository_mode not in {"read", "worktree"}:
-        raise ValidationError(f"invalid assignment repository mode: {repository_mode!r}")
-    repo = _repo_dir(ship, assignment)
-    canonical_worktree = _canonical_worktree(repo, assignment_id, repository_mode)
+def _validate_existing_binding(binding: dict[str, Any], agent_name: str) -> dict[str, Any]:
+    if not all(isinstance(binding[key], str) and binding[key] for key in _BINDING_KEYS):
+        raise ConflictError("assignment has partial launch facts")
+    if binding["agentName"] != agent_name:
+        raise ConflictError("assignment launch facts have a non-canonical agent name")
+    live = _agent(_herdr(["agent", "get", agent_name], optional=True))
+    live_name = _field(live or {}, "name", "agentName", "agent_name")
+    live_pane = _field(live or {}, "pane_id", "paneId")
+    if not live or live_name != agent_name or live_pane != binding["paneId"]:
+        raise ConflictError("assignment launch facts are not live")
+    return binding
 
-    existing = _facts(assignment)
-    if any(existing.values()):
-        if not all(isinstance(existing[key], str) and existing[key] for key in _FACT_KEYS):
-            raise ConflictError("assignment has partial launch facts")
-        if existing["agentName"] != agent_name:
-            raise ConflictError("assignment launch facts have a non-canonical agent name")
-        live = _agent(_herdr(["agent", "get", agent_name], optional=True))
-        live_name = _field(live or {}, "name", "agentName", "agent_name")
-        live_pane = _field(live or {}, "pane_id", "paneId")
-        if not live or live_name != agent_name or live_pane != existing["paneId"]:
-            raise ConflictError("assignment launch facts are not live")
-        return existing
+
+def _start_fresh_resources(
+    ship: Path,
+    assignment: dict[str, Any],
+    assignment_id: str,
+    agent_name: str,
+    repo: Path,
+    repository_mode: str,
+    canonical_worktree: Path,
+) -> dict[str, Any]:
     live = _agent(_herdr(["agent", "get", agent_name], optional=True))
     if live:
         raise ConflictError(
@@ -274,13 +290,13 @@ def launch_assignment(
             raise OperationError("Herdr split did not return a pane ID")
 
         start_args = ["agent", "start", agent_name, "--kind", "omp", "--pane", pane_id]
-        native: list[str] = []
+        agent_options: list[str] = []
         if assignment.get("model"):
-            native.extend(["--model", str(assignment["model"])])
+            agent_options.extend(["--model", str(assignment["model"])])
         if assignment.get("effort"):
-            native.extend(["--thinking", str(assignment["effort"])])
-        if native:
-            start_args.extend(["--", *native])
+            agent_options.extend(["--thinking", str(assignment["effort"])])
+        if agent_options:
+            start_args.extend(["--", *agent_options])
         _herdr(start_args)
         _herdr(["agent", "prompt", agent_name, prompt])
     except Exception as original:
@@ -297,17 +313,45 @@ def launch_assignment(
         "worktreeDir": str(worktree),
         "launchedAt": now(),
     }
+
+
+def launch_assignment(
+    ship_dir: str | Path,
+    assignment: dict[str, Any],
+) -> dict[str, Any]:
+    ship = Path(ship_dir).expanduser().resolve()
+    assignment_id = validate_id(str(_field(assignment, "id", "assignment_id", "assignmentId") or ""), "assignment")
+    agent_name = _agent_name(assignment_id)
+    repository_mode = assignment.get("repository")
+    if repository_mode not in {"read", "worktree"}:
+        raise ValidationError(f"invalid assignment repository mode: {repository_mode!r}")
+    repo = _repo_dir(ship, assignment)
+    canonical_worktree = _canonical_worktree(repo, assignment_id, repository_mode)
+    binding = _binding(assignment)
+    if any(binding.values()):
+        return _validate_existing_binding(binding, agent_name)
+    return _start_fresh_resources(
+        ship,
+        assignment,
+        assignment_id,
+        agent_name,
+        repo,
+        repository_mode,
+        canonical_worktree,
+    )
+
+
 def observe_assignment(ship_dir: str | Path, assignment: dict[str, Any]) -> dict[str, Any]:
     del ship_dir
-    facts = _facts(assignment)
+    binding = _binding(assignment)
     raw_id = _field(assignment, "id", "assignment_id", "assignmentId")
-    target = _agent_name(str(raw_id)) if raw_id else facts["agentName"]
+    target = _agent_name(str(raw_id)) if raw_id else binding["agentName"]
     observed: dict[str, Any] = {"available": False, "status": "missing"}
-    if facts["agentName"]:
-        observed["agentName"] = facts["agentName"]
-    if facts["paneId"]:
-        observed["paneId"] = facts["paneId"]
-    if raw_id and facts["agentName"] and facts["agentName"] != target:
+    if binding["agentName"]:
+        observed["agentName"] = binding["agentName"]
+    if binding["paneId"]:
+        observed["paneId"] = binding["paneId"]
+    if raw_id and binding["agentName"] and binding["agentName"] != target:
         observed["status"] = "stale"
         return observed
     if not raw_id and (
@@ -324,9 +368,9 @@ def observe_assignment(ship_dir: str | Path, assignment: dict[str, Any]) -> dict
     live_name = _field(live, "name", "agentName", "agent_name")
     live_pane = _field(live, "pane_id", "paneId")
     if (
-        (facts["agentName"] and facts["agentName"] != target)
+        (binding["agentName"] and binding["agentName"] != target)
         or (live_name is not None and live_name != target)
-        or (facts["paneId"] and live_pane != facts["paneId"])
+        or (binding["paneId"] and live_pane != binding["paneId"])
     ):
         observed["status"] = "stale"
         return observed
@@ -342,7 +386,7 @@ def observe_assignment(ship_dir: str | Path, assignment: dict[str, Any]) -> dict
     return observed
 
 
-def _message_bound(binding: dict[str, Any], message: str) -> bool:
+def _send_prompt(binding: dict[str, Any], message: str) -> bool:
     target = _field(
         binding,
         "agentName",
@@ -365,28 +409,26 @@ def message_crewmate(
     del ship_dir
     if not isinstance(message, str) or not message.strip():
         raise ValidationError("crewmate message is required")
-    facts = _facts(assignment)
+    binding = _binding(assignment)
     raw_id = _field(assignment, "id", "assignment_id", "assignmentId")
-    if not raw_id or not facts["agentName"] or not facts["paneId"]:
+    if not raw_id or not binding["agentName"] or not binding["paneId"]:
         return False
     target = _agent_name(str(raw_id))
-    if facts["agentName"] != target:
+    if binding["agentName"] != target:
         return False
     live = _agent(_herdr(["agent", "get", target], optional=True))
     if not live:
         return False
     live_name = _field(live, "name", "agentName", "agent_name")
     live_pane = _field(live, "pane_id", "paneId")
-    if (live_name is not None and live_name != target) or live_pane != facts["paneId"]:
+    if (live_name is not None and live_name != target) or live_pane != binding["paneId"]:
         return False
-    return _message_bound({"agentName": target}, message)
+    return _send_prompt({"agentName": target}, message)
+
 
 def wake_officer(ship_dir: str | Path, event: dict[str, Any]) -> bool:
     ship = Path(ship_dir).expanduser().resolve()
-    try:
-        officer = json.loads((ship / "officer.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    officer = _read_persisted_officer(ship)
+    if not officer:
         return False
-    if not isinstance(officer, dict):
-        return False
-    return _message_bound(officer, json.dumps(event, sort_keys=True, separators=(",", ":")))
+    return _send_prompt(officer, json.dumps(event, sort_keys=True, separators=(",", ":")))

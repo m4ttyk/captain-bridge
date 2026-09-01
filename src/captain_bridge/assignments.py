@@ -78,19 +78,19 @@ def _role(storage: Storage, role_name: str) -> tuple[dict[str, Any], str]:
     return role, "\n".join(lines[end + 1 :]).strip()
 
 
-def _event(assignment_id: str, kind: str, **facts: Any) -> dict[str, Any]:
+def _event(assignment_id: str, kind: str, **details: Any) -> dict[str, Any]:
     return {
         "id": new_id("event"),
         "kind": kind,
         "at": now(),
         "assignmentId": assignment_id,
-        **facts,
+        **details,
     }
 
 
 def _events(ship: Path, assignment_id: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for path in sorted((ship / "events").glob("*.json")):
+    for path in (ship / "events").glob("*.json"):
         try:
             event = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -100,13 +100,13 @@ def _events(ship: Path, assignment_id: str) -> list[dict[str, Any]]:
     return sorted(events, key=lambda item: (item.get("at", ""), item.get("id", "")))
 
 
-def _complete_runtime_facts(facts: Any, assignment_id: str) -> dict[str, Any]:
-    if not isinstance(facts, dict):
+def _require_complete_runtime_binding(binding: Any) -> dict[str, Any]:
+    if not isinstance(binding, dict):
         raise OperationError("runtime returned a non-object assignment binding")
-    missing = [key for key in ("agentName", "paneId", "worktreeDir", "launchedAt") if not facts.get(key)]
+    missing = [key for key in ("agentName", "paneId", "worktreeDir", "launchedAt") if not binding.get(key)]
     if missing:
         raise OperationError(f"runtime returned a partial assignment binding; missing: {', '.join(missing)}")
-    return facts
+    return binding
 
 
 def _canonical_worktree(assignment: dict[str, Any], assignment_id: str) -> Path:
@@ -139,6 +139,8 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise OperationError(f"git {' '.join(args)} failed: {detail}")
     return result
+
+
 def _assignment_repo(storage: Storage, ship: Path, assignment: dict[str, Any]) -> Path:
     metadata = storage.read_json(ship / "metadata.json")
     ship_raw = metadata.get("repoDir") if isinstance(metadata, dict) else None
@@ -211,11 +213,11 @@ def launch_assignment(ship: Path, assignment_id: str) -> dict:
                 launch_path,
                 {"assignmentId": assignment_id, "requestedAt": now()},
             )
-        facts = _complete_runtime_facts(runtime.launch_assignment(ship, assignment), assignment_id)
-        assignment["runtime"] = facts
+        binding = _require_complete_runtime_binding(runtime.launch_assignment(ship, assignment))
+        assignment["runtime"] = binding
         storage.atomic_write_json(directory / "assignment.json", assignment)
         storage.append_event(ship, _event(assignment_id, "assignment-launched"))
-        return facts
+        return binding
 
 
 @_captain_operation
@@ -234,7 +236,6 @@ def inspect_assignment(ship: Path, assignment_id: str) -> dict:
         event_kinds=(event.get("kind", "") for event in events),
         has_result=sections is not None,
         has_integration=integration is not None,
-        runtime=observed,
     )
     return {
         "assignment": assignment,
@@ -265,6 +266,30 @@ def message_assignment(ship: Path, assignment_id: str, message: str) -> dict:
     return {"assignmentId": assignment_id, "delivered": True}
 
 
+def _apply_assignment_commit(repo: Path, canonical: str) -> bool:
+    dirty = _git(repo, "status", "--porcelain").stdout
+    if dirty:
+        raise ConflictError(f"target repository is dirty: {repo}")
+
+    ancestor = _git(repo, "merge-base", "--is-ancestor", canonical, "HEAD", check=False)
+    if ancestor.returncode not in {0, 1}:
+        detail = ancestor.stderr.strip() or ancestor.stdout.strip() or f"exit {ancestor.returncode}"
+        raise OperationError(f"cannot determine whether {canonical} is reachable from target: {detail}")
+    already_reachable = ancestor.returncode == 0
+    if already_reachable:
+        return True
+
+    cherry_pick = _git(repo, "cherry-pick", canonical, check=False)
+    if cherry_pick.returncode:
+        detail = cherry_pick.stderr.strip() or cherry_pick.stdout.strip() or f"exit {cherry_pick.returncode}"
+        aborted = _git(repo, "cherry-pick", "--abort", check=False)
+        if aborted.returncode:
+            abort_detail = aborted.stderr.strip() or aborted.stdout.strip() or f"exit {aborted.returncode}"
+            detail = f"{detail}; abort also failed: {abort_detail}"
+        raise ConflictError(f"cherry-pick did not apply cleanly: {detail}")
+    return False
+
+
 @_captain_operation
 def integrate_assignment(ship: Path, assignment_id: str, commit: str) -> dict:
     storage = Storage()
@@ -288,24 +313,7 @@ def integrate_assignment(ship: Path, assignment_id: str, commit: str) -> dict:
                     f"assignment {assignment_id} is already integrated at {receipt.get('commit', 'an unknown commit')}"
                 )
             return receipt
-        dirty = _git(repo, "status", "--porcelain").stdout
-        if dirty:
-            raise ConflictError(f"target repository is dirty: {repo}")
-
-        ancestor = _git(repo, "merge-base", "--is-ancestor", canonical, "HEAD", check=False)
-        if ancestor.returncode not in {0, 1}:
-            detail = ancestor.stderr.strip() or ancestor.stdout.strip() or f"exit {ancestor.returncode}"
-            raise OperationError(f"cannot determine whether {canonical} is reachable from target: {detail}")
-        already_reachable = ancestor.returncode == 0
-        if not already_reachable:
-            cherry_pick = _git(repo, "cherry-pick", canonical, check=False)
-            if cherry_pick.returncode:
-                detail = cherry_pick.stderr.strip() or cherry_pick.stdout.strip() or f"exit {cherry_pick.returncode}"
-                aborted = _git(repo, "cherry-pick", "--abort", check=False)
-                if aborted.returncode:
-                    abort_detail = aborted.stderr.strip() or aborted.stdout.strip() or f"exit {aborted.returncode}"
-                    detail = f"{detail}; abort also failed: {abort_detail}"
-                raise ConflictError(f"cherry-pick did not apply cleanly: {detail}")
+        already_reachable = _apply_assignment_commit(repo, canonical)
 
         receipt = {
             "assignmentId": assignment_id,

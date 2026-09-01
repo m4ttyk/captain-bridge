@@ -42,13 +42,12 @@ class DomainTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 parse_result_sections("\n".join(f"# {h}" for h in headings))
 
-    def test_status_ignores_runtime_snapshot(self):
+    def test_status_derives_from_durable_records(self):
         self.assertEqual(
             derive_assignment_status(
                 event_kinds=("assignment-launched",),
                 has_result=False,
                 has_integration=False,
-                runtime={"status": "settled"},
             ),
             "launched",
         )

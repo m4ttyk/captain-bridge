@@ -45,17 +45,14 @@ class CliContractTests(unittest.TestCase):
         self.assertTrue(result.stdout.endswith("\n"))
         return json.loads(result.stdout)
 
-    def test_documented_ship_assignment_decision_memory_and_event_flows(self):
+    def create_ship(self):
         created = self.json_ok("ship", "create", str(self.repo), "demo")
         ship = Path(created["path"])
-        self.assertTrue(ship.is_dir())
-        self.assertEqual(created["repoDir"], str(self.repo.resolve()))
-
         selected_env = self.env | {"CAPTAIN_BRIDGE_SHIP": str(ship)}
-        reconciled = self.json_ok("ship", "reconcile", cwd=self.outside, env=selected_env)
-        self.assertEqual(reconciled["path"], str(ship))
+        return ship, selected_env
 
-        assignment = self.json_ok(
+    def create_assignment(self, env):
+        return self.json_ok(
             "assignment",
             "create",
             "--role",
@@ -63,9 +60,25 @@ class CliContractTests(unittest.TestCase):
             "--prompt",
             "Add input validation",
             cwd=self.outside,
-            env=selected_env,
+            env=env,
         )
+
+    def test_ship_commands(self):
+        ship, selected_env = self.create_ship()
+        self.assertTrue(ship.is_dir())
+        metadata = json.loads((ship / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["repoDir"], str(self.repo.resolve()))
+
+        opened = self.json_ok("ship", "open", str(ship))
+        self.assertEqual(opened["path"], str(ship))
+        reconciled = self.json_ok("ship", "reconcile", cwd=self.outside, env=selected_env)
+        self.assertEqual(reconciled["path"], str(ship))
+
+    def test_assignment_commands(self):
+        ship, selected_env = self.create_ship()
+        assignment = self.create_assignment(selected_env)
         assignment_id = assignment["id"]
+
         inspected = self.json_ok(
             "assignment",
             "inspect",
@@ -75,6 +88,11 @@ class CliContractTests(unittest.TestCase):
         )
         self.assertEqual(inspected["assignment"]["id"], assignment_id)
         self.assertEqual(inspected["status"], "created")
+        self.assertEqual(len(list((ship / "events").glob("*.json"))), 1)
+
+    def test_decision_commands_update_assignment_state(self):
+        _, selected_env = self.create_ship()
+        assignment_id = self.create_assignment(selected_env)["id"]
 
         requested = self.json_ok(
             "decision",
@@ -126,6 +144,8 @@ class CliContractTests(unittest.TestCase):
         )
         self.assertEqual(reviewed["reviewNote"], "Recorded after review.")
 
+    def test_memory_commands(self):
+        _, selected_env = self.create_ship()
         memory = self.json_ok(
             "memory",
             "record",
@@ -149,10 +169,14 @@ class CliContractTests(unittest.TestCase):
             env=selected_env,
         )
         memory_id = memory["id"]
-        self.assertEqual(self.json_ok("memory", "inspect", memory_id, env=selected_env)["id"], memory_id)
+        inspected = self.json_ok("memory", "inspect", memory_id, env=selected_env)
+        self.assertEqual(inspected["id"], memory_id)
         search = self.json_ok("memory", "search", "malformed payload", env=selected_env)
         self.assertEqual([item["id"] for item in search], [memory_id])
 
+    def test_event_commands_record_pi_events(self):
+        ship, selected_env = self.create_ship()
+        assignment_id = self.create_assignment(selected_env)["id"]
         event = self.json_ok(
             "_event",
             "emit",
@@ -211,8 +235,14 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(len(list((ship / "events").glob("*.json"))), len(baseline_events) + 1)
 
         other = self.json_ok(
-            "_event", "emit", "--kind", "session-started", "--assignment", assignment_id,
-            cwd=self.outside, env=selected_env,
+            "_event",
+            "emit",
+            "--kind",
+            "session-started",
+            "--assignment",
+            assignment_id,
+            cwd=self.outside,
+            env=selected_env,
         )
         self.assertEqual(other["event"]["kind"], "session-started")
         self.assertEqual(len(list((ship / "events").glob("*.json"))), len(baseline_events) + 2)
@@ -228,7 +258,6 @@ class CliContractTests(unittest.TestCase):
         error = json.loads(result.stderr)
         self.assertEqual(error["error"]["code"], 3)
         self.assertIn("ship not found", error["error"]["message"])
-
 
 if __name__ == "__main__":
     unittest.main()

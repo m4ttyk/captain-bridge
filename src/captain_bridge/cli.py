@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+from typing import Any
 
 from . import assignments, decisions, memory, runtime
 from .domain import (
@@ -18,8 +19,11 @@ from .domain import (
 )
 from .ships import create_ship, open_ship, reconcile
 from .storage import Storage
+
+
 def _ship(value: str | None) -> Path:
     return Storage().resolve_ship(value)
+
 
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -44,6 +48,8 @@ def _text(value: str | None, file: str | None, label: str, *, required: bool = T
     if required and not value:
         raise ValidationError(f"{label} must not be empty")
     return value
+
+
 def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     storage = Storage()
     ship = storage.resolve_ship(args.ship)
@@ -83,83 +89,120 @@ def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def _run(args: argparse.Namespace) -> Any:
-    if args.group == "ship":
-        if args.action == "create":
-            repo = args.repo_opt or args.repo
-            slug = args.slug_opt or args.slug
-            if not repo or not slug:
-                raise ValidationError("ship create requires repo and slug")
-            return create_ship(repo, slug)
-        if args.action == "open":
-            return open_ship(args.path or args.ship)
+def _run_ship(args: argparse.Namespace) -> Any:
+    if args.action == "create":
+        repo = args.repo_opt or args.repo
+        slug = args.slug_opt or args.slug
+        if not repo or not slug:
+            raise ValidationError("ship create requires repo and slug")
+        return create_ship(repo, slug)
+    if args.action == "open":
+        return open_ship(args.path or args.ship)
+    if args.action == "reconcile":
         return reconcile(args.ship)
+    raise ValidationError(f"unknown ship action: {args.action}")
 
-    if args.group == "assignment":
-        ship = _ship(args.ship)
-        if args.action == "create":
-            return assignments.create_assignment(
-                ship,
-                role_name=args.role,
-                prompt=_text(args.prompt, args.prompt_file, "prompt") or "",
-            )
-        if args.action == "launch":
-            return assignments.launch_assignment(ship, args.assignment_id)
-        if args.action == "inspect":
-            return assignments.inspect_assignment(ship, args.assignment_id)
-        if args.action == "message":
-            return assignments.message_assignment(
-                ship, args.assignment_id, _text(args.message, args.message_file, "message") or ""
-            )
-        if args.action == "integrate":
-            return assignments.integrate_assignment(ship, args.assignment_id, _text(args.commit_opt or args.commit, args.commit_file, "commit") or "")
+
+def _run_assignment(args: argparse.Namespace) -> Any:
+    ship = _ship(args.ship)
+    if args.action == "create":
+        return assignments.create_assignment(
+            ship,
+            role_name=args.role,
+            prompt=_text(args.prompt, args.prompt_file, "prompt") or "",
+        )
+    if args.action == "launch":
+        return assignments.launch_assignment(ship, args.assignment_id)
+    if args.action == "inspect":
+        return assignments.inspect_assignment(ship, args.assignment_id)
+    if args.action == "message":
+        return assignments.message_assignment(
+            ship,
+            args.assignment_id,
+            _text(args.message, args.message_file, "message") or "",
+        )
+    if args.action == "integrate":
+        return assignments.integrate_assignment(
+            ship,
+            args.assignment_id,
+            _text(args.commit_opt or args.commit, args.commit_file, "commit") or "",
+        )
+    if args.action == "cleanup":
         return assignments.cleanup_assignment(ship, args.assignment_id)
+    raise ValidationError(f"unknown assignment action: {args.action}")
 
-    if args.group == "decision":
-        ship = _ship(args.ship)
-        if args.action == "request":
-            affected = args.affected_assignments or []
-            return decisions.request_decision(
-                ship,
-                question=_text(args.question, args.question_file, "question") or "",
-                mode=args.mode,
-                confidence=args.confidence,
-                assignment_id=args.assignment_id,
-                affected_assignments=affected,
-                blocks_further_dependent_work=args.blocks_further_dependent_work,
-                impact=_text(args.impact, args.impact_file, "impact", required=False),
-                supersedes=args.supersedes,
-            )
-        if args.action == "resolve":
-            return decisions.resolve_decision(
-                ship,
-                args.decision_id,
-                answer=_text(args.answer, args.answer_file, "answer") or "",
-                resolved_by=args.resolved_by,
-                rationale=_text(args.rationale, args.rationale_file, "rationale") or "",
-            )
+
+def _run_decision(args: argparse.Namespace) -> Any:
+    ship = _ship(args.ship)
+    if args.action == "request":
+        return decisions.request_decision(
+            ship,
+            question=_text(args.question, args.question_file, "question") or "",
+            mode=args.mode,
+            confidence=args.confidence,
+            assignment_id=args.assignment_id,
+            affected_assignments=args.affected_assignments or [],
+            blocks_further_dependent_work=args.blocks_further_dependent_work,
+            impact=_text(args.impact, args.impact_file, "impact", required=False),
+            supersedes=args.supersedes,
+        )
+    if args.action == "resolve":
+        return decisions.resolve_decision(
+            ship,
+            args.decision_id,
+            answer=_text(args.answer, args.answer_file, "answer") or "",
+            resolved_by=args.resolved_by,
+            rationale=_text(args.rationale, args.rationale_file, "rationale") or "",
+        )
+    if args.action == "review":
         return decisions.review_decision(
             ship,
             args.decision_id,
             note=_text(args.note, args.note_file, "review note", required=False),
         )
+    raise ValidationError(f"unknown decision action: {args.action}")
 
-    if args.group == "memory":
-        if args.action == "record":
-            values = {
-                name: _text(getattr(args, name), getattr(args, f"{name}_file"), label) or ""
-                for name, label in (
-                    ("title", "title"), ("symptom", "symptom"), ("context", "context"),
-                    ("cause", "cause"), ("workaround", "workaround"),
-                    ("evidence", "evidence"), ("follow_up", "follow-up"),
-                )
-            }
-            return memory.record_memory(area=args.area, supersedes=args.supersedes, home=None, **values)
-        if args.action == "search":
-            return memory.search_memory(args.query or "", area=args.area)
+
+def _run_memory(args: argparse.Namespace) -> Any:
+    if args.action == "record":
+        values = {
+            name: _text(getattr(args, name), getattr(args, f"{name}_file"), label) or ""
+            for name, label in (
+                ("title", "title"),
+                ("symptom", "symptom"),
+                ("context", "context"),
+                ("cause", "cause"),
+                ("workaround", "workaround"),
+                ("evidence", "evidence"),
+                ("follow_up", "follow-up"),
+            )
+        }
+        return memory.record_memory(area=args.area, supersedes=args.supersedes, home=None, **values)
+    if args.action == "search":
+        return memory.search_memory(args.query or "", area=args.area)
+    if args.action == "inspect":
         return memory.inspect_memory(args.memory_id)
+    raise ValidationError(f"unknown memory action: {args.action}")
 
-    return _record_event(args)
+
+def _run_event(args: argparse.Namespace) -> Any:
+    if args.action == "emit":
+        return _record_event(args)
+    raise ValidationError(f"unknown event action: {args.action}")
+
+
+def _run(args: argparse.Namespace) -> Any:
+    if args.group == "ship":
+        return _run_ship(args)
+    if args.group == "assignment":
+        return _run_assignment(args)
+    if args.group == "decision":
+        return _run_decision(args)
+    if args.group == "memory":
+        return _run_memory(args)
+    if args.group == "_event":
+        return _run_event(args)
+    raise ValidationError(f"unknown command group: {args.group}")
 
 
 def build_parser() -> argparse.ArgumentParser:
