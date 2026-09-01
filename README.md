@@ -1,3 +1,6 @@
+<img width="1672" height="941" alt="captain-bridge" src="https://github.com/user-attachments/assets/8077ff7a-dbbd-4fe2-96d5-346f17eb4e2c" />
+
+
 # Captain Bridge
 
 Captain Bridge is a local macOS orchestration MVP for Git, Herdr, and OMP-Pi. It gives one Officer durable authority over ships, assignments, decisions, and reusable memory. Runtime currently targets one local macOS user; it is not a multi-user service.
