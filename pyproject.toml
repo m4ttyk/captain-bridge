@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "captain-bridge"
+version = "0.1.0"
+description = "Captain Bridge"
+requires-python = ">=3.11"
+
+[project.scripts]
+captain-bridge = "captain_bridge.__main__:main"
+captain = "captain_bridge.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+captain_bridge = ["resources/*.md", "resources/roles/*.md"]

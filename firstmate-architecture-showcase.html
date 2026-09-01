@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A compact README-style summary of Firstmate's operational-plane state files: what gets written, when it is read, and why.">
+  <title>Firstmate Operational Plane — README Summary</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #09111f;
+      --panel: #12233a;
+      --panel-2: #172b46;
+      --ink: #f3f7ff;
+      --text: #c4d1e5;
+      --muted: #8fa4c2;
+      --faint: #6e84a5;
+      --line: rgba(174, 204, 240, .18);
+      --cyan: #68e4d4;
+      --blue: #76bcff;
+      --purple: #c0a4ff;
+      --yellow: #ffd27e;
+      --red: #ff9cad;
+      --green: #91e5a8;
+      --max: 1040px;
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(118,188,255,.13), transparent 32rem),
+        radial-gradient(circle at 90% 10%, rgba(192,164,255,.1), transparent 28rem),
+        var(--bg);
+      font: 16px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); text-underline-offset: 3px; }
+    a:hover { color: var(--cyan); }
+    code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { color: #e4edff; font-size: .9em; overflow-wrap: anywhere; }
+    .shell { width: min(var(--max), calc(100% - 36px)); margin: 0 auto; }
+    .topbar { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line); background: rgba(9,17,31,.88); backdrop-filter: blur(16px); }
+    .topbar-inner { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { color: var(--ink); font-size: .76rem; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; white-space: nowrap; }
+    nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 14px; }
+    nav a { color: var(--muted); font-size: .8rem; text-decoration: none; }
+    nav a:hover, nav a:focus-visible { color: var(--ink); }
+    main { padding: 42px 0 76px; }
+    h1, h2, h3 { margin: 0; line-height: 1.12; letter-spacing: -.03em; }
+    h1 { max-width: 720px; font-size: clamp(2.7rem, 7vw, 5.5rem); font-weight: 900; }
+    h2 { font-size: clamp(1.75rem, 3vw, 2.45rem); }
+    h3 { font-size: 1.06rem; }
+    p { margin: 0; }
+    .eyebrow { color: var(--cyan); font-size: .72rem; font-weight: 850; letter-spacing: .16em; text-transform: uppercase; }
+    .hero { padding: 24px 0 42px; }
+    .hero p { max-width: 700px; margin-top: 18px; color: var(--text); font-size: 1.13rem; }
+    .hero .subtle { margin-top: 12px; color: var(--muted); font-size: .86rem; }
+    .section { padding-top: 48px; scroll-margin-top: 76px; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+    .section-head > p { max-width: 570px; color: var(--text); font-size: .94rem; }
+    .panel, .callout, .record, .state, .rule, .source-list li { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(23,43,70,.93), rgba(14,27,47,.9)); }
+    .callout { padding: 20px; border-color: rgba(104,228,212,.38); background: linear-gradient(135deg, rgba(104,228,212,.13), rgba(118,188,255,.05)); }
+    .callout strong { color: var(--ink); }
+    .callout p { color: var(--text); }
+    .callout .big { margin-bottom: 12px; color: var(--ink); font-size: clamp(1.25rem, 2.5vw, 1.75rem); line-height: 1.25; }
+    .pill { display: inline-block; padding: 3px 8px; border: 1px solid currentColor; border-radius: 99px; color: var(--cyan); font-size: .66rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .pill.blue { color: var(--blue); }
+    .pill.yellow { color: var(--yellow); }
+    .pill.purple { color: var(--purple); }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; counter-reset: flow; }
+    .flow-step { position: relative; min-height: 145px; padding: 17px 15px; border: 1px solid var(--line); border-radius: 14px; background: rgba(18,35,58,.85); }
+    .flow-step::before { counter-increment: flow; content: counter(flow); display: grid; place-items: center; width: 26px; height: 26px; margin-bottom: 13px; border-radius: 8px; color: var(--bg); background: var(--cyan); font-size: .82rem; font-weight: 900; }
+    .flow-step:nth-child(2)::before { background: var(--blue); }
+    .flow-step:nth-child(3)::before { background: var(--purple); }
+    .flow-step:nth-child(4)::before { background: var(--yellow); }
+    .flow-step:nth-child(5)::before { background: var(--green); }
+    .flow-step:not(:last-child)::after { content: '→'; position: absolute; top: 48%; right: -13px; z-index: 1; color: var(--cyan); font-size: 1.25rem; font-weight: 900; }
+    .flow-step p { margin-top: 7px; color: var(--text); font-size: .84rem; line-height: 1.4; }
+    .records { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+    .record { padding: 17px; box-shadow: 0 8px 26px rgba(0,0,0,.12); }
+    .record h3 { color: var(--ink); }
+    .record .purpose { margin-top: 6px; color: var(--cyan); font-size: .87rem; font-weight: 750; }
+    .record dl { display: grid; grid-template-columns: 74px 1fr; gap: 4px 10px; margin: 14px 0 0; }
+    .record dt { color: var(--faint); font-size: .68rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .record dd { margin: 0; color: var(--text); font-size: .82rem; }
+    .record:nth-child(2) { border-top: 3px solid var(--blue); }
+    .record:nth-child(3) { border-top: 3px solid var(--purple); }
+    .record:nth-child(4) { border-top: 3px solid var(--yellow); }
+    .record:nth-child(5) { border-top: 3px solid var(--green); }
+    .record:nth-child(6) { border-top: 3px solid var(--red); }
+    .record:nth-child(7) { border-top: 3px solid var(--cyan); }
+    .states { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
+    .state { padding: 18px; }
+    .state h3 { margin-top: 9px; }
+    .state p { margin-top: 7px; color: var(--text); font-size: .88rem; }
+    .state.current { border-top: 3px solid var(--cyan); }
+    .state.activity { border-top: 3px solid var(--blue); }
+    .state.wake { border-top: 3px solid var(--yellow); }
+    .rules { display: grid; gap: 9px; counter-reset: rule; }
+    .rule { display: grid; grid-template-columns: 32px 1fr; gap: 12px; align-items: start; padding: 14px 16px; }
+    .rule::before { counter-increment: rule; content: counter(rule); display: grid; place-items: center; width: 25px; height: 25px; border-radius: 8px; color: var(--bg); background: var(--cyan); font-size: .78rem; font-weight: 900; }
+    .rule strong { display: block; color: var(--ink); font-size: .92rem; }
+    .rule span { display: block; margin-top: 3px; color: var(--text); font-size: .86rem; }
+    .source-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .source-list li { padding: 11px 14px; color: var(--text); font-size: .83rem; }
+    .source-list b { margin-right: 6px; color: var(--ink); }
+    footer { padding: 45px 0; color: var(--faint); font-size: .78rem; }
+    @media (max-width: 800px) {
+      .flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .flow-step:nth-child(3)::after { display: none; }
+      .states { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 600px) {
+      .shell { width: min(var(--max), calc(100% - 24px)); }
+      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 0; }
+      nav { justify-content: flex-start; gap: 4px 11px; }
+      main { padding-top: 27px; }
+      .section { padding-top: 38px; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .flow, .records { grid-template-columns: 1fr; }
+      .flow-step { min-height: 0; padding: 15px 15px 15px 55px; }
+      .flow-step::before { position: absolute; top: 15px; left: 15px; }
+      .flow-step:not(:last-child)::after { top: auto; right: auto; bottom: -17px; left: 50%; content: '↓'; transform: translateX(-50%); }
+    }
+    @media print {
+      :root { color-scheme: light; --bg: white; --ink: #111827; --text: #374151; --muted: #4b5563; --faint: #6b7280; --line: #d1d5db; }
+      body { background: white; }
+      .topbar { position: static; background: white; }
+      .panel, .callout, .record, .state, .rule, .source-list li { box-shadow: none; break-inside: avoid; }
+      a { color: #1458a6; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">Firstmate / state summary</div>
+      <nav aria-label="Primary navigation">
+        <a href="#flow">Flow</a>
+        <a href="#records">Disk records</a>
+        <a href="#states">States</a>
+        <a href="#rules">Rules</a>
+        <a href="#sources">Sources</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="eyebrow">README for impatient developers</div>
+      <h1 id="page-title">Firstmate state, in 60 seconds.</h1>
+      <p><strong>Workers write facts to <code>$FM_HOME/state/</code>.</strong> The watcher reads them, decides whether to stay quiet or wake the first mate, and the first mate reads the queue before acting.</p>
+      <p class="subtle">The important distinction: <code>&lt;id&gt;.status</code> is history. Current state is calculated from stronger evidence.</p>
+    </section>
+
+    <section class="section" id="flow" aria-labelledby="flow-title">
+      <div class="section-head">
+        <div><div class="eyebrow">01 / the whole flow</div><h2 id="flow-title">Write → read → decide → wake → acknowledge</h2></div>
+        <p>No model turn is spent for routine activity. Only actionable or uncertain situations reach the wake queue.</p>
+      </div>
+      <div class="flow">
+        <article class="flow-step"><h3>Worker runs</h3><p>Crewmate works in its session and worktree.</p></article>
+        <article class="flow-step"><h3>Records are written</h3><p>Status, turn-end, and busy signals land on disk.</p></article>
+        <article class="flow-step"><h3>Watcher reads</h3><p>It checks new bytes, signatures, panes, and liveness.</p></article>
+        <article class="flow-step"><h3>Queue or absorb</h3><p>Busy noise is absorbed. Actionable or unknown events are queued.</p></article>
+        <article class="flow-step"><h3>First mate acts</h3><p>It drains, investigates, talks to the captain, then acknowledges.</p></article>
+      </div>
+    </section>
+
+    <section class="section" id="records" aria-labelledby="records-title">
+      <div class="section-head">
+        <div><div class="eyebrow">02 / what lives on disk</div><h2 id="records-title">The local records</h2></div>
+        <p>Each file has one job. Do not treat every record as “the current status.”</p>
+      </div>
+      <div class="records">
+        <article class="record"><span class="pill">event log</span><h3><code>state/&lt;id&gt;.status</code></h3><p class="purpose">Worker announcements over time.</p><dl><dt>Written</dt><dd>Crew or status-reporting paths append lines.</dd><dt>Read</dt><dd>Watcher classifier, wake drain, state fallback.</dd><dt>Keeps</dt><dd>History; not current-state truth. <a href="https://github.com/kunchenguid/firstmate/blob/main/AGENTS.md">[F2]</a></dd></dl></article>
+        <article class="record"><span class="pill blue">turn marker</span><h3><code>state/&lt;id&gt;.turn-ended</code></h3><p class="purpose">Proof that a worker turn ended.</p><dl><dt>Written</dt><dd>Turn-end hook.</dd><dt>Read</dt><dd>Watcher stale and busy-time checks.</dd><dt>Keeps</dt><dd>Last turn boundary.</dd></dl></article>
+        <article class="record"><span class="pill purple">activity</span><h3><code>state/&lt;id&gt;.busy-state</code><br><code>state/&lt;id&gt;.busy-gen</code></h3><p class="purpose">Adapter’s busy / idle / unknown signal.</p><dl><dt>Written</dt><dd><code>fm-busy-event.sh</code> and adapters.</dd><dt>Read</dt><dd>Watcher and current-state reader.</dd><dt>Keeps</dt><dd>Versioned, ordered activity evidence. <a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-busy-event.sh">[F6]</a></dd></dl></article>
+        <article class="record"><span class="pill yellow">durable inbox</span><h3><code>state/.wake-queue</code></h3><p class="purpose">Things the first mate must handle.</p><dl><dt>Written</dt><dd>Watcher via <code>fm_wake_append</code>.</dd><dt>Read</dt><dd><code>fm-wake-drain.sh</code> at wake start.</dd><dt>Keeps</dt><dd><code>epoch seq kind key payload</code> until ack. <a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-wake-lib.sh">[F8]</a></dd></dl></article>
+        <article class="record"><span class="pill blue">identity</span><h3><code>state/&lt;id&gt;.meta</code> + worktree data</h3><p class="purpose">Which worker owns which task.</p><dl><dt>Written</dt><dd>Spawn and lifecycle scripts.</dd><dt>Read</dt><dd>Watcher, state reader, delivery cleanup.</dd><dt>Keeps</dt><dd>Task id, kind, backend, worktree, run context.</dd></dl></article>
+        <article class="record"><span class="pill purple">memory</span><h3>Seen markers, cursors, timers</h3><p class="purpose">What the watcher already processed.</p><dl><dt>Written</dt><dd>Watcher and classifier.</dd><dt>Read</dt><dd>Next watcher cycle or wake drain.</dd><dt>Keeps</dt><dd>Byte offsets, signatures, open decisions, stale episodes.</dd></dl></article>
+        <article class="record"><span class="pill">health</span><h3><code>.last-watcher-beat</code> and recovery markers</h3><p class="purpose">Whether supervision itself is alive.</p><dl><dt>Written</dt><dd>Watcher loop and recovery paths.</dd><dt>Read</dt><dd>Health checks and restart reconciliation.</dd><dt>Keeps</dt><dd>Watcher liveness and recovery generation.</dd></dl></article>
+      </div>
+    </section>
+
+    <section class="section" id="states" aria-labelledby="states-title">
+      <div class="section-head">
+        <div><div class="eyebrow">03 / do not mix these up</div><h2 id="states-title">Three kinds of state</h2></div>
+        <p>The same worker can be “idle” as an activity signal and still be “parked” as a task state.</p>
+      </div>
+      <div class="states">
+        <article class="state current"><span class="pill">current crew state</span><h3><code>working · parked · done · blocked · paused · failed · unknown</code></h3><p>Computed by <code>fm-crew-state.sh</code> from run steps, remote endpoints, busy signals, and recognized status events. It is read-only; it is not one file.</p></article>
+        <article class="state activity"><span class="pill blue">activity signal</span><h3><code>busy · idle · unknown</code></h3><p>Written by the adapter contract in <code>.busy-state</code>. “Idle” means not busy now—not that the task is complete. Missing or untrusted evidence stays unknown.</p></article>
+        <article class="state wake"><span class="pill yellow">wake event</span><h3><code>signal · stale · check · heartbeat</code></h3><p>These are notifications for the first mate. They are not crew states. A queued event remains until it is handled and acknowledged.</p></article>
+      </div>
+    </section>
+
+    <section class="section" id="rules" aria-labelledby="rules-title">
+      <div class="section-head">
+        <div><div class="eyebrow">04 / operating rules</div><h2 id="rules-title">The five rules</h2></div>
+        <p>These rules explain most of the watcher’s behavior.</p>
+      </div>
+      <div class="rules">
+        <div class="rule"><div><strong>Status is a log, not a database field.</strong><span>The last line can be old; use the current-state reader for “what is happening now?”</span></div></div>
+        <div class="rule"><div><strong>Unknown is not idle.</strong><span>Broken, stale, malformed, or unverified evidence is surfaced instead of guessed away.</span></div></div>
+        <div class="rule"><div><strong>Routine busy activity is absorbed.</strong><span>A no-verb note does not wake the model when positive evidence says the crew is working.</span></div></div>
+        <div class="rule"><div><strong>Stale output gets a second opinion.</strong><span>The watcher checks run state, busy state, pause state, and turn-end timing before escalating.</span></div></div>
+        <div class="rule"><div><strong>Read first; acknowledge last.</strong><span>The wake queue is drained before new work, and rows are removed only after handling completes.</span></div></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="reader-title">
+      <div class="callout">
+        <span class="pill">current-state reader</span>
+        <h2 id="reader-title" style="margin-top:11px">If you need one command: <code>bin/fm-crew-state.sh &lt;id&gt;</code></h2>
+        <p style="margin-top:10px">It reads the available evidence and prints one answer like <code>state: working · source: run-step · detail: ...</code>. It does not write anything. If it cannot prove the answer, it prints <strong>unknown</strong>.</p>
+      </div>
+    </section>
+
+    <section class="section" id="sources" aria-labelledby="sources-title">
+      <div class="section-head">
+        <div><div class="eyebrow">05 / source files</div><h2 id="sources-title">Read the implementation here</h2></div>
+        <p>The page above is intentionally short. These are the source files behind it.</p>
+      </div>
+      <ol class="source-list">
+        <li><b>[F2]</b><a href="https://github.com/kunchenguid/firstmate/blob/main/AGENTS.md">AGENTS.md</a> — state-file conventions, lifecycle, wake handling, and acknowledgement.</li>
+        <li><b>[F3]</b><a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/docs/architecture.md">docs/architecture.md</a> — supervision model, busy state, recovery, and unknown handling.</li>
+        <li><b>[F4]</b><a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-watch.sh">bin/fm-watch.sh</a> — watcher loop, stale checks, timing, and queue writes.</li>
+        <li><b>[F5]</b><a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-crew-state.sh">bin/fm-crew-state.sh</a> — current-state reader and evidence precedence.</li>
+        <li><b>[F6]</b><a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-busy-event.sh">bin/fm-busy-event.sh</a> / <a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-busy-lib.sh">fm-busy-lib.sh</a> — activity records, generations, sequence ordering, and trust.</li>
+        <li><b>[F7]</b><a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-classify-lib.sh">bin/fm-classify-lib.sh</a> — status vocabulary, cursors, no-verb absorption, and open decisions.</li>
+        <li><b>[F8]</b><a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-wake-lib.sh">bin/fm-wake-lib.sh</a> / <a href="https://raw.githubusercontent.com/kunchenguid/firstmate/main/bin/fm-wake-drain.sh">fm-wake-drain.sh</a> — durable queue writes, drain, and acknowledgement.</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="shell">Self-contained README-style summary. No external assets or JavaScript libraries.</footer>
+</body>
+</html>
