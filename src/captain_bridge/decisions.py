@@ -18,9 +18,6 @@ from .storage import Storage
 
 
 
-def _optional(value: object | None, label: str) -> str | None:
-    return None if value is None else require_text(value, label)
-
 
 def _entity_id(value: object, kind: str) -> str:
     if not isinstance(value, str):
@@ -87,7 +84,7 @@ def request_decision(
     if affected_assignments is not None and not isinstance(affected_assignments, list):
         raise ValidationError("affectedAssignments must be a list")
     affected = [_entity_id(item, "assignment") for item in affected_assignments or []]
-    impact = _optional(impact, "impact")
+    impact = None if impact is None else require_text(impact, "impact")
     if supersedes is not None:
         supersedes = _entity_id(supersedes, "decision")
         _read_decision(storage, _decision_path(ship, supersedes), supersedes)
@@ -190,7 +187,7 @@ def review_decision(
     path = _decision_path(ship, decision_id)
     with storage.file_lock((ship / "decisions.lock").resolve()):
         record = _read_decision(storage, path, decision_id)
-        note = _optional(note, "review note")
+        note = None if note is None else require_text(note, "review note")
         if record.get("status") != "resolved":
             raise ConflictError(f"decision {decision_id} must be resolved before review")
         if record.get("reviewedAt") is not None:

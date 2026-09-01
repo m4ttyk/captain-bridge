@@ -7,7 +7,6 @@ type Binding = {
   assignment: string;
   officer: string;
   sessionId: string;
-  boundAt: string;
 };
 
 type EventKind =
@@ -74,7 +73,6 @@ export default function captainBridge(pi: ExtensionAPI) {
       assignment,
       officer,
       sessionId: ctx.sessionManager.getSessionId(),
-      boundAt: new Date().toISOString(),
     };
     resultReadyEmitted = false;
     resultReadyPending = false;

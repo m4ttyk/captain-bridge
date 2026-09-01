@@ -35,9 +35,6 @@ def _memory_id(value: object) -> str:
     return validate_id(value, "memory")
 
 
-def _storage(home: str | Path | None) -> Storage:
-    return Storage(home)
-
 
 def _memory_dir(storage: Storage) -> Path:
     return storage.home_dir / "memory"
@@ -148,7 +145,7 @@ def record_memory(
     supersedes: str | None = None,
     home: str | Path | None = None,
 ) -> dict[str, Any]:
-    storage = _storage(home)
+    storage = Storage(home)
     title = require_text(title, "title")
     area = slugify(require_text(area, "area"))
     sections = {
@@ -201,7 +198,7 @@ def search_memory(
         raise ValidationError("query must be text")
     needle = query.strip().casefold()
     area = slugify(require_text(area, "area")) if area is not None else None
-    records = _all_memories(_storage(home))
+    records = _all_memories(Storage(home))
     superseded = _superseded_by(records)
     results = [
         record
@@ -218,7 +215,7 @@ def inspect_memory(
     *,
     home: str | Path | None = None,
 ) -> dict[str, Any]:
-    storage = _storage(home)
+    storage = Storage(home)
     memory_id = _memory_id(memory_id)
     records = _all_memories(storage)
     record = next((item for item in records if item["id"] == memory_id), None)
