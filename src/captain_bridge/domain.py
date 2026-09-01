@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 READABLE_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
@@ -87,30 +86,6 @@ def validate_event_kind(value: str, *, pi_only: bool = False) -> str:
     return value
 
 
-def validate_path(
-    value: str | Path,
-    *,
-    must_exist: bool = False,
-    directory: bool = False,
-) -> Path:
-    raw = str(value)
-    if not raw or "\0" in raw:
-        raise ValidationError("path must be non-empty and contain no NUL byte")
-    path = Path(raw).expanduser().resolve()
-    if must_exist and not path.exists():
-        raise NotFoundError(f"path does not exist: {path}")
-    if directory and path.exists() and not path.is_dir():
-        raise ValidationError(f"path is not a directory: {path}")
-    return path
-
-
-def child_path(root: Path, *parts: str) -> Path:
-    path = root.joinpath(*parts).resolve()
-    try:
-        path.relative_to(root.resolve())
-    except ValueError as exc:
-        raise ValidationError(f"path escapes ship: {path}") from exc
-    return path
 
 
 def require_text(value: object, label: str) -> str:
