@@ -76,6 +76,96 @@ class RuntimeTests(unittest.TestCase):
             ["--", "--model", "test-model", "--thinking", "low"],
         )
 
+    @patch("captain_bridge.runtime.time.sleep")
+    @patch("captain_bridge.runtime.subprocess.run")
+    def test_read_launch_retries_transient_pane_busy_before_prompt(self, run, sleep):
+        run.side_effect = [
+            completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}}),
+            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
+            completed(
+                returncode=1,
+                stderr='{"error":{"code":"agent_pane_busy","message":"pane is still starting"}}',
+            ),
+            completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
+            completed({"result": {"ok": True}}),
+        ]
+
+        binding = launch_assignment(self.ship, self.assignment)
+
+        self.assertEqual(binding["paneId"], "w1:p2")
+        sleep.assert_called_once_with(0.1)
+        start_calls = [
+            call.args[0]
+            for call in run.call_args_list
+            if call.args[0][:3] == ["herdr", "agent", "start"]
+        ]
+        self.assertEqual(len(start_calls), 2)
+        prompt_calls = [
+            call.args[0]
+            for call in run.call_args_list
+            if call.args[0][:3] == ["herdr", "agent", "prompt"]
+        ]
+        self.assertEqual(len(prompt_calls), 1)
+
+    @patch("captain_bridge.runtime.time.sleep")
+    @patch("captain_bridge.runtime.subprocess.run")
+    def test_read_launch_non_busy_start_failure_is_immediate(self, run, sleep):
+        run.side_effect = [
+            completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}}),
+            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
+            completed(
+                returncode=1,
+                stderr='{"error":{"code":"agent_start_failed","message":"start failed"}}',
+            ),
+            completed({"result": {"ok": True}}),
+        ]
+
+        with self.assertRaisesRegex(OperationError, "start failed"):
+            launch_assignment(self.ship, self.assignment)
+
+        sleep.assert_not_called()
+        start_calls = [
+            call.args[0]
+            for call in run.call_args_list
+            if call.args[0][:3] == ["herdr", "agent", "start"]
+        ]
+        self.assertEqual(len(start_calls), 1)
+        self.assertEqual(run.call_args_list[-1].args[0][:3], ["herdr", "pane", "close"])
+
+    @patch("captain_bridge.runtime.time.sleep")
+    @patch("captain_bridge.runtime.subprocess.run")
+    def test_read_launch_persistent_pane_busy_is_bounded_and_rolls_back(self, run, sleep):
+        start_calls = 0
+
+        def herdr(args, **_):
+            nonlocal start_calls
+            if args[:4] == ["herdr", "agent", "get", ASSIGNMENT_ID]:
+                return completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}')
+            if args[:3] == ["herdr", "pane", "current"]:
+                return completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}})
+            if args[:3] == ["herdr", "pane", "split"]:
+                return completed({"result": {"pane": {"pane_id": "w1:p2"}}})
+            if args[:3] == ["herdr", "agent", "start"]:
+                start_calls += 1
+                return completed(
+                    returncode=1,
+                    stderr='{"error":{"code":"agent_pane_busy","message":"pane is still starting"}}',
+                )
+            if args[:3] == ["herdr", "pane", "close"]:
+                return completed({"result": {"ok": True}})
+            raise AssertionError(args)
+
+        run.side_effect = herdr
+
+        with self.assertRaisesRegex(OperationError, "pane is still starting"):
+            launch_assignment(self.ship, self.assignment)
+
+        self.assertEqual(start_calls, 6)
+        self.assertEqual(sleep.call_count, 5)
+        self.assertEqual(run.call_args_list[-1].args[0][:3], ["herdr", "pane", "close"])
+
     @patch("captain_bridge.runtime.subprocess.run")
     def test_worktree_launch_creates_named_branch_at_canonical_path(self, run):
         run.side_effect = [

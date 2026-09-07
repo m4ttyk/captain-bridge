@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ _AGENT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _BINDING_KEYS = ("agentName", "paneId", "worktreeDir", "launchedAt")
 _AGENT_STATES = {"working", "idle", "blocked", "done", "unknown", "stale"}
 _NOT_FOUND_CODES = {"agent_not_found", "agent-not-found", "not_found", "not-found"}
+_PANE_START_RETRY_DELAYS = (0.1, 0.25, 0.5, 1, 2)
 
 
 def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -41,16 +43,23 @@ def _json_error_code(text: str) -> str | None:
     return code if isinstance(code, str) else None
 
 
+class _HerdrCommandError(OperationError):
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
+
 def _herdr(args: list[str], *, optional: bool = False) -> dict[str, Any] | None:
     completed = _run(["herdr", *args])
     if completed.returncode:
         detail = completed.stderr.strip() or completed.stdout.strip()
-        if optional and (
-            _json_error_code(completed.stderr) in _NOT_FOUND_CODES
-            or _json_error_code(completed.stdout) in _NOT_FOUND_CODES
-        ):
+        code = _json_error_code(completed.stderr) or _json_error_code(completed.stdout)
+        if optional and code in _NOT_FOUND_CODES:
             return None
-        raise OperationError(f"Herdr command failed: {detail or completed.returncode}")
+        raise _HerdrCommandError(
+            f"Herdr command failed: {detail or completed.returncode}",
+            code=code,
+        )
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
@@ -67,11 +76,23 @@ def _herdr(args: list[str], *, optional: bool = False) -> dict[str, Any] | None:
             if isinstance(error, dict)
             else str(error)
         )
-        raise OperationError(f"Herdr command failed: {detail}")
+        raise _HerdrCommandError(f"Herdr command failed: {detail}", code=code)
     result = payload.get("result", payload)
     if not isinstance(result, dict):
         raise OperationError("Herdr returned an invalid result")
     return result
+
+
+def _start_agent_when_pane_ready(start_args: list[str]) -> dict[str, Any] | None:
+    for attempt in range(len(_PANE_START_RETRY_DELAYS) + 1):
+        if attempt:
+            time.sleep(_PANE_START_RETRY_DELAYS[attempt - 1])
+        try:
+            return _herdr(start_args)
+        except _HerdrCommandError as error:
+            if error.code != "agent_pane_busy" or attempt == len(_PANE_START_RETRY_DELAYS):
+                raise
+    raise AssertionError("unreachable")
 
 
 def _field(data: dict[str, Any], *names: str) -> Any:
@@ -297,7 +318,7 @@ def _start_fresh_resources(
             agent_options.extend(["--thinking", str(assignment["effort"])])
         if agent_options:
             start_args.extend(["--", *agent_options])
-        _herdr(start_args)
+        _start_agent_when_pane_ready(start_args)
         _herdr(["agent", "prompt", agent_name, prompt])
     except Exception as original:
         try:
