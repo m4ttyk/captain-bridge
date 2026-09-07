@@ -52,8 +52,15 @@ class RuntimeTests(unittest.TestCase):
     def test_read_launch_uses_repo_dir_and_submits_prompt_without_waiting(self, run):
         run.side_effect = [
             completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
-            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}}),
-            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer", "workspace_id": "w1"}}}),
+            completed(
+                {
+                    "result": {
+                        "tab": {"tab_id": "w1:t2", "workspace_id": "w1"},
+                        "root_pane": {"pane_id": "w1:p2"},
+                    }
+                }
+            ),
             completed({"result": {"agent": {"name": ASSIGNMENT_ID, "pane_id": "w1:p2"}}}),
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
         ]
@@ -63,11 +70,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(binding["agentName"], ASSIGNMENT_ID)
         self.assertEqual(binding["paneId"], "w1:p2")
         self.assertEqual(binding["worktreeDir"], str(self.repo.resolve()))
-        split = run.call_args_list[2].args[0]
-        self.assertIn(f"CAPTAIN_BRIDGE_SHIP={self.ship.resolve()}", split)
-        self.assertIn(f"CAPTAIN_BRIDGE_ASSIGNMENT={ASSIGNMENT_ID}", split)
-        self.assertIn("CAPTAIN_BRIDGE_OFFICER=officer", split)
-        self.assertIn(str(self.repo.resolve()), split)
+        create = run.call_args_list[2].args[0]
+        self.assertEqual(create[:4], ["herdr", "tab", "create", "--workspace"])
+        self.assertIn("w1", create)
+        self.assertIn("--cwd", create)
+        self.assertIn(str(self.repo.resolve()), create)
+        self.assertIn("--label", create)
+        self.assertIn(ASSIGNMENT_ID, create)
+        self.assertIn(f"CAPTAIN_BRIDGE_SHIP={self.ship.resolve()}", create)
+        self.assertIn(f"CAPTAIN_BRIDGE_ASSIGNMENT={ASSIGNMENT_ID}", create)
+        self.assertIn("CAPTAIN_BRIDGE_OFFICER=officer", create)
+        self.assertIn("--no-focus", create)
         prompt = run.call_args_list[-1].args[0]
         self.assertEqual(prompt, ["herdr", "agent", "prompt", ASSIGNMENT_ID, "Do the assigned work."])
         self.assertNotIn("--wait", prompt)
@@ -81,8 +94,15 @@ class RuntimeTests(unittest.TestCase):
     def test_read_launch_retries_transient_pane_busy_before_prompt(self, run, sleep):
         run.side_effect = [
             completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
-            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}}),
-            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer", "workspace_id": "w1"}}}),
+            completed(
+                {
+                    "result": {
+                        "tab": {"tab_id": "w1:t2"},
+                        "root_pane": {"pane_id": "w1:p2"},
+                    }
+                }
+            ),
             completed(
                 returncode=1,
                 stderr='{"error":{"code":"agent_pane_busy","message":"pane is still starting"}}',
@@ -113,8 +133,15 @@ class RuntimeTests(unittest.TestCase):
     def test_read_launch_non_busy_start_failure_is_immediate(self, run, sleep):
         run.side_effect = [
             completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
-            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}}),
-            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer", "workspace_id": "w1"}}}),
+            completed(
+                {
+                    "result": {
+                        "tab": {"tab_id": "w1:t2"},
+                        "root_pane": {"pane_id": "w1:p2"},
+                    }
+                }
+            ),
             completed(
                 returncode=1,
                 stderr='{"error":{"code":"agent_start_failed","message":"start failed"}}',
@@ -132,7 +159,21 @@ class RuntimeTests(unittest.TestCase):
             if call.args[0][:3] == ["herdr", "agent", "start"]
         ]
         self.assertEqual(len(start_calls), 1)
-        self.assertEqual(run.call_args_list[-1].args[0][:3], ["herdr", "pane", "close"])
+        self.assertEqual(run.call_args_list[-1].args[0], ["herdr", "tab", "close", "w1:t2"])
+
+    @patch("captain_bridge.runtime.subprocess.run")
+    def test_root_pane_parse_failure_closes_created_tab(self, run):
+        run.side_effect = [
+            completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "workspace_id": "w1"}}}),
+            completed({"result": {"tab": {"tab_id": "w1:t2"}}}),
+            completed({"result": {"ok": True}}),
+        ]
+
+        with self.assertRaisesRegex(OperationError, "root pane ID"):
+            launch_assignment(self.ship, self.assignment)
+
+        self.assertEqual(run.call_args_list[-1].args[0], ["herdr", "tab", "close", "w1:t2"])
 
     @patch("captain_bridge.runtime.time.sleep")
     @patch("captain_bridge.runtime.subprocess.run")
@@ -144,27 +185,33 @@ class RuntimeTests(unittest.TestCase):
             if args[:4] == ["herdr", "agent", "get", ASSIGNMENT_ID]:
                 return completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}')
             if args[:3] == ["herdr", "pane", "current"]:
-                return completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer"}}})
-            if args[:3] == ["herdr", "pane", "split"]:
-                return completed({"result": {"pane": {"pane_id": "w1:p2"}}})
+                return completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer", "workspace_id": "w1"}}})
+            if args[:3] == ["herdr", "tab", "create"]:
+                return completed(
+                    {
+                        "result": {
+                            "tab": {"tab_id": "w1:t2"},
+                            "root_pane": {"pane_id": "w1:p2"},
+                        }
+                    }
+                )
             if args[:3] == ["herdr", "agent", "start"]:
                 start_calls += 1
                 return completed(
                     returncode=1,
                     stderr='{"error":{"code":"agent_pane_busy","message":"pane is still starting"}}',
                 )
-            if args[:3] == ["herdr", "pane", "close"]:
+            if args[:3] == ["herdr", "tab", "close"]:
                 return completed({"result": {"ok": True}})
             raise AssertionError(args)
 
         run.side_effect = herdr
-
         with self.assertRaisesRegex(OperationError, "pane is still starting"):
             launch_assignment(self.ship, self.assignment)
 
         self.assertEqual(start_calls, 6)
         self.assertEqual(sleep.call_count, 5)
-        self.assertEqual(run.call_args_list[-1].args[0][:3], ["herdr", "pane", "close"])
+        self.assertEqual(run.call_args_list[-1].args[0][:3], ["herdr", "tab", "close"])
 
     @patch("captain_bridge.runtime.subprocess.run")
     def test_worktree_launch_creates_named_branch_at_canonical_path(self, run):
@@ -172,8 +219,15 @@ class RuntimeTests(unittest.TestCase):
             completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
             completed(returncode=1),
             completed(),
-            completed({"result": {"pane": {"pane_id": "w1:p1"}}}),
-            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer", "workspace_id": "w1"}}}),
+            completed(
+                {
+                    "result": {
+                        "tab": {"tab_id": "w1:t2"},
+                        "root_pane": {"pane_id": "w1:p2"},
+                    }
+                }
+            ),
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
         ]
@@ -349,7 +403,7 @@ class RuntimeTests(unittest.TestCase):
         run.assert_not_called()
 
     @patch("captain_bridge.runtime.subprocess.run")
-    def test_prompt_failure_tears_down_created_pane_and_worktree(self, run):
+    def test_prompt_failure_tears_down_created_tab_and_worktree(self, run):
         assignment = {**self.assignment, "repository": "worktree"}
         expected = self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID
 
@@ -359,9 +413,16 @@ class RuntimeTests(unittest.TestCase):
 
         run.side_effect = [
             completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
-            completed({"result": {"pane": {"pane_id": "w1:p1"}}}),
-            completed({"result": {"pane": {"pane_id": "w1:p2"}}}),
-            completed(),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "workspace_id": "w1"}}}),
+            completed(
+                {
+                    "result": {
+                        "tab": {"tab_id": "w1:t2"},
+                        "root_pane": {"pane_id": "w1:p2"},
+                    }
+                }
+            ),
+            completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
             completed(returncode=1, stderr='{"error":{"code":"agent_prompt_stalled"}}'),
             completed(),
             completed(),
@@ -369,7 +430,7 @@ class RuntimeTests(unittest.TestCase):
         with patch("captain_bridge.runtime._create_worktree", side_effect=create_worktree):
             with self.assertRaises(OperationError):
                 launch_assignment(self.ship, assignment)
-        self.assertEqual(run.call_args_list[-2].args[0], ["herdr", "pane", "close", "w1:p2"])
+        self.assertEqual(run.call_args_list[-2].args[0], ["herdr", "tab", "close", "w1:t2"])
         self.assertEqual(run.call_args_list[-1].args[0][:3], ["git", "worktree", "remove"])
         self.assertEqual(run.call_args_list[-1].kwargs["cwd"], self.repo.resolve())
 

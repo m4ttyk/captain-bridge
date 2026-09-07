@@ -206,6 +206,24 @@ def _officer_target(ship_dir: Path, current: dict[str, Any]) -> str:
         raise OperationError("current Officer could not be identified")
     return target
 
+
+def _current_workspace_id(current: dict[str, Any]) -> str:
+    workspace = current.get("workspace")
+    if isinstance(workspace, str) and workspace:
+        return workspace
+    sources = [current]
+    pane = current.get("pane")
+    if isinstance(pane, dict):
+        sources.append(pane)
+    if isinstance(workspace, dict):
+        sources.append(workspace)
+    for source in sources:
+        value = _field(source, "workspace_id", "workspaceId")
+        if isinstance(value, str) and value:
+            return value
+    raise OperationError("current Officer workspace could not be identified")
+
+
 def _create_worktree(repo: Path, assignment_id: str) -> Path:
     worktree = repo.parent / ".captain-bridge-worktrees" / assignment_id
     branch = f"captain/{assignment_id}"
@@ -225,16 +243,16 @@ def _create_worktree(repo: Path, assignment_id: str) -> Path:
     return worktree
 
 
-def _teardown_launch(repo: Path, pane_id: str | None, worktree: Path | None) -> None:
+def _teardown_launch(repo: Path, tab_id: str | None, worktree: Path | None) -> None:
     failures: list[str] = []
-    if pane_id:
+    if tab_id:
         try:
-            result = _run(["herdr", "pane", "close", pane_id])
+            result = _run(["herdr", "tab", "close", tab_id])
             if result.returncode:
                 detail = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
-                failures.append(f"pane close failed: {detail}")
+                failures.append(f"tab close failed: {detail}")
         except Exception as error:
-            failures.append(f"pane close raised {error}")
+            failures.append(f"tab close raised {error}")
     if worktree is not None and worktree.exists():
         try:
             result = _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo)
@@ -282,20 +300,23 @@ def _start_fresh_resources(
 
     prompt = _prompt_path(ship, assignment, assignment_id).read_text(encoding="utf-8")
     worktree: Path | None = None
+    tab_id: str | None = None
     pane_id: str | None = None
     try:
         worktree = repo if repository_mode == "read" else _create_worktree(repo, assignment_id)
         current = _herdr(["pane", "current", "--current"])
         assert current is not None
         officer = _officer_target(ship, current)
-        split = _herdr([
-            "pane",
-            "split",
-            "--current",
-            "--direction",
-            "right",
+        workspace_id = _current_workspace_id(current)
+        created = _herdr([
+            "tab",
+            "create",
+            "--workspace",
+            workspace_id,
             "--cwd",
             str(worktree),
+            "--label",
+            assignment_id,
             "--env",
             f"CAPTAIN_BRIDGE_SHIP={ship}",
             "--env",
@@ -304,11 +325,15 @@ def _start_fresh_resources(
             f"CAPTAIN_BRIDGE_OFFICER={officer}",
             "--no-focus",
         ])
-        assert split is not None
-        pane = split.get("pane") if isinstance(split.get("pane"), dict) else split
-        pane_id = _field(pane, "pane_id", "paneId")
+        assert created is not None
+        tab = created.get("tab")
+        tab_id = _field(tab, "tab_id", "tabId") if isinstance(tab, dict) else None
+        root_pane = created.get("root_pane")
+        pane_id = _field(root_pane, "pane_id", "paneId") if isinstance(root_pane, dict) else None
+        if not isinstance(tab_id, str) or not tab_id:
+            raise OperationError("Herdr tab create did not return a tab ID")
         if not isinstance(pane_id, str) or not pane_id:
-            raise OperationError("Herdr split did not return a pane ID")
+            raise OperationError("Herdr tab create did not return a root pane ID")
 
         start_args = ["agent", "start", agent_name, "--kind", "omp", "--pane", pane_id]
         agent_options: list[str] = []
@@ -322,7 +347,7 @@ def _start_fresh_resources(
         _herdr(["agent", "prompt", agent_name, prompt])
     except Exception as original:
         try:
-            _teardown_launch(repo, pane_id, worktree if repository_mode == "worktree" else None)
+            _teardown_launch(repo, tab_id, worktree if repository_mode == "worktree" else None)
         except Exception as cleanup:
             raise OperationError(
                 f"launch failed: {original}; cleanup failed: {cleanup}"
