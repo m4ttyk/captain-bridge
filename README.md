@@ -12,18 +12,20 @@ Captain Bridge is a local macOS orchestration MVP for Git, Herdr, and OMP-Pi. It
 - Pi (OMP-Pi) and its local agent directories
 - Herdr when launching/inspecting agent work
 
-## Install and configure Pi
+## Install and configure OMP
 
-From this checkout:
+OMP uses `~/.omp/agent` by default, not Pi's `~/.pi/agent`. Links under `~/.pi/agent` will not be discovered by OMP. The commands below target OMP's default profile; if you use a named profile or override its configuration directory, use that profile's agent directory instead.
+
+From this checkout, run each command on a single line:
 
 ```sh
 pipx install --editable .
-mkdir -p ~/.pi/agent/extensions ~/.pi/agent/skills
-ln -sf "$PWD/extensions/captain-bridge.ts" ~/.pi/agent/extensions/captain-bridge.ts
-ln -sfn "$PWD/skills/captain" ~/.pi/agent/skills/captain
+mkdir -p ~/.omp/agent/extensions ~/.omp/agent/skills
+ln -sfn "$PWD/extensions/captain-bridge.ts" ~/.omp/agent/extensions/captain-bridge.ts
+ln -sfn "$PWD/skills/captain" ~/.omp/agent/skills/captain
 ```
 
-Restart Pi after changing extension or skill links. The extension is `extensions/captain-bridge.ts`; the user skill is `skills/captain/SKILL.md`. The registered invocation is `/skill:captain`; the `/captain` alias is not yet registered.
+Restart OMP after changing extension or skill links, then invoke `/skill:captain` to check that the skill is available. The extension is `extensions/captain-bridge.ts`; the user skill is `skills/captain/SKILL.md`. The `/captain` alias is not yet registered.
 
 ## First ship
 
