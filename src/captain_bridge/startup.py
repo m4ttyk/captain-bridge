@@ -87,14 +87,6 @@ def _live_officer_target(officer: dict[str, Any]) -> str | None:
 
 
 def _current_officer(pane: dict[str, Any] | None, persisted: dict[str, Any]) -> dict[str, str]:
-    env_name = os.environ.get("CAPTAIN_BRIDGE_OFFICER_NAME")
-    env_pane = os.environ.get("CAPTAIN_BRIDGE_OFFICER_ID")
-    if env_name or env_pane:
-        return {
-            **({"agentName": env_name} if env_name else {}),
-            **({"paneId": env_pane} if env_pane else {}),
-        }
-
     pane_id = _field(pane or {}, "pane_id", "paneId")
     detected = _field(pane or {}, "agentName", "agent_name")
     status = _field(pane or {}, "agent_status", "status")
@@ -109,14 +101,14 @@ def _current_officer(pane: dict[str, Any] | None, persisted: dict[str, Any]) -> 
 
 
 def _select_ship(root: Path, storage: Storage) -> Path:
+    root = root.expanduser().resolve()
     explicit = os.environ.get("CAPTAIN_BRIDGE_SHIP")
     if explicit:
         ship = storage.resolve_ship(explicit)
         metadata = storage.read_json(ship / "metadata.json")
         registered = metadata.get("repoDir") if isinstance(metadata, dict) else None
-        if not isinstance(registered, str) or Path(registered).expanduser().resolve() != root:
-            raise ConflictError(f"ship {ship} is not registered for checkout {root}")
-        return ship
+        if isinstance(registered, str) and Path(registered).expanduser().resolve() == root:
+            return ship
 
     try:
         return storage.resolve_ship_for_repository(root)

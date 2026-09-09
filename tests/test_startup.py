@@ -1,11 +1,13 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from captain_bridge.domain import ConflictError
 from captain_bridge.ships import create_ship, open_ship
-from captain_bridge.startup import _merge_prompt
+from captain_bridge.startup import _current_officer, _merge_prompt, _select_ship
 from captain_bridge.storage import Storage
 
 
@@ -19,6 +21,95 @@ class StartupTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def _write_ship(self, storage, name, repo, officer):
+        storage.ships_dir.mkdir(parents=True, exist_ok=True)
+        ship = storage.ships_dir / name
+        ship.mkdir()
+        (ship / "index.md").write_text(f"# {name}\n", encoding="utf-8")
+        (ship / "metadata.json").write_text(
+            json.dumps({"shipId": f"{name}-id", "name": name, "repoDir": str(repo)}),
+            encoding="utf-8",
+        )
+        (ship / "officer.json").write_text(json.dumps(officer), encoding="utf-8")
+        return ship
+
+    def test_current_pane_overrides_inherited_officer_identity(self):
+        (self.repo / ".git").mkdir()
+        storage = Storage(self.home)
+        created = create_ship(
+            self.repo,
+            "demo",
+            storage=storage,
+            officer={"agentName": "old-parent", "paneId": "old-pane"},
+        )
+        persisted = {"agentName": "old-parent", "paneId": "old-pane"}
+
+        with patch.dict(
+            os.environ,
+            {"CAPTAIN_BRIDGE_OFFICER_NAME": "inherited-parent", "CAPTAIN_BRIDGE_OFFICER_ID": "parent-pane"},
+            clear=True,
+        ):
+            identity = _current_officer(
+                {"agentName": "current-officer", "pane_id": "current-pane", "status": "working"},
+                persisted,
+            )
+            opened = open_ship(created["path"], storage=storage, officer=identity)
+
+        self.assertEqual(identity, {"agentName": "current-officer", "paneId": "current-pane"})
+        self.assertEqual(opened["officer"], identity)
+        self.assertNotEqual(opened["officer"].get("agentName"), "inherited-parent")
+        self.assertNotEqual(opened["officer"].get("agentName"), "old-parent")
+
+
+    def test_foreign_inherited_ship_falls_back_to_existing_current_ship(self):
+        storage = Storage(self.home)
+        foreign_repo = self.root / "parent-repo"
+        foreign_repo.mkdir()
+        foreign = self._write_ship(storage, "parent-default", foreign_repo, {"agentName": "parent"})
+        local = self._write_ship(storage, "repo-default", self.repo, {"agentName": "local"})
+        foreign_metadata = (foreign / "metadata.json").read_text(encoding="utf-8")
+        foreign_officer = (foreign / "officer.json").read_text(encoding="utf-8")
+
+        with patch.dict(os.environ, {"CAPTAIN_BRIDGE_SHIP": str(foreign)}):
+            selected = _select_ship(self.repo, storage)
+
+        self.assertEqual(selected, local.resolve())
+        self.assertEqual((foreign / "metadata.json").read_text(encoding="utf-8"), foreign_metadata)
+        self.assertEqual((foreign / "officer.json").read_text(encoding="utf-8"), foreign_officer)
+
+    def test_foreign_inherited_ship_creates_current_checkout_ship(self):
+        (self.repo / ".git").mkdir()
+        storage = Storage(self.home)
+        foreign_repo = self.root / "parent-repo"
+        foreign_repo.mkdir()
+        foreign = self._write_ship(storage, "parent-default", foreign_repo, {"paneId": "parent-pane"})
+        foreign_metadata = (foreign / "metadata.json").read_text(encoding="utf-8")
+        foreign_officer = (foreign / "officer.json").read_text(encoding="utf-8")
+
+        with patch.dict(
+            os.environ,
+            {"CAPTAIN_BRIDGE_SHIP": str(foreign), "CAPTAIN_BRIDGE_SHIP_SLUG": "isolated"},
+        ):
+            selected = _select_ship(self.repo, storage)
+
+        self.assertEqual(selected, (self.home / "ships" / "repo-isolated").resolve())
+        metadata = json.loads((selected / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(Path(metadata["repoDir"]).resolve(), self.repo.resolve())
+        self.assertEqual((foreign / "metadata.json").read_text(encoding="utf-8"), foreign_metadata)
+        self.assertEqual((foreign / "officer.json").read_text(encoding="utf-8"), foreign_officer)
+
+    def test_matching_env_ship_disambiguates_current_checkout(self):
+        storage = Storage(self.home)
+        first = self._write_ship(storage, "repo-one", self.repo, {"agentName": "one"})
+        second = self._write_ship(storage, "repo-two", self.repo, {"agentName": "two"})
+
+        with patch.dict(os.environ, {"CAPTAIN_BRIDGE_SHIP": str(second)}):
+            selected = _select_ship(self.repo, storage)
+
+        self.assertEqual(selected, second.resolve())
+        self.assertNotEqual(selected, first.resolve())
+
 
     def test_merge_prompt_preserves_omp_arguments_and_custom_append(self):
         merged = _merge_prompt(

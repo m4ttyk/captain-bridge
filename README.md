@@ -41,7 +41,7 @@ captain start
 
 The wrapper resolves the current checkout root, reuses its registered ship or creates one, binds the Officer, and starts OMP with the Officer policy. Existing live Officers are attached through Herdr when available. OMP arguments, including model selection and custom appended instructions, can follow `start`.
 
-If multiple ships match the checkout, explicitly select one with `CAPTAIN_BRIDGE_SHIP`; the wrapper does not guess. Startup requires a Git checkout. `captain ship open` remains a state-reconciliation command, not an interactive launcher.
+If multiple ships match the checkout, explicitly select one with `CAPTAIN_BRIDGE_SHIP`; the wrapper does not guess. For startup, an inherited `CAPTAIN_BRIDGE_SHIP` from another checkout is ignored and the current checkout's ship is reused or created. Startup requires a Git checkout. `captain ship open` remains a state-reconciliation command, not an interactive launcher.
 
 Writable workers use `<main-checkout>/.worktrees/<assignment-id>`, including when the originating checkout is linked. The directory is ignored through Git's local exclude file. Existing external worktrees are not automatically moved or deleted. Nesting does not copy uncommitted files, load the main `.env`, or inject main-checkout skills; the Officer supplies task context.
 
