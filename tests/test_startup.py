@@ -61,6 +61,19 @@ class StartupTests(unittest.TestCase):
         self.assertNotEqual(opened["officer"].get("agentName"), "inherited-parent")
         self.assertNotEqual(opened["officer"].get("agentName"), "old-parent")
 
+    def test_no_current_pane_ignores_inherited_officer_identity(self):
+        persisted = {"agentName": "current-officer", "paneId": "current-pane"}
+
+        with patch.dict(
+            os.environ,
+            {"CAPTAIN_BRIDGE_OFFICER_NAME": "inherited-parent", "CAPTAIN_BRIDGE_OFFICER_ID": "parent-pane"},
+            clear=True,
+        ):
+            identity = _current_officer(None, persisted)
+
+        self.assertEqual(identity, persisted)
+
+
 
     def test_foreign_inherited_ship_falls_back_to_existing_current_ship(self):
         storage = Storage(self.home)
