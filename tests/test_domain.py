@@ -5,7 +5,6 @@ from captain_bridge.domain import (
     decision_mode,
     derive_assignment_status,
     new_id,
-    parse_result_sections,
     validate_id,
 )
 
@@ -27,20 +26,23 @@ class DomainTests(unittest.TestCase):
         self.assertNotIn("1", suffix)
         self.assertNotIn("l", suffix)
 
-    def test_result_headings_must_be_unique_complete_and_ordered(self):
-        valid = "\n".join(f"## {heading}\ntext" for heading in (
-            "Outcome", "Commits", "Verification", "Findings", "Open questions"
-        ))
-        self.assertEqual(list(parse_result_sections(valid)), [
-            "Outcome", "Commits", "Verification", "Findings", "Open questions"
-        ])
-        for headings in (
-            ("Outcome", "Commits", "Commits", "Findings", "Open questions"),
-            ("Outcome", "Verification", "Findings", "Open questions"),
-            ("Outcome", "Verification", "Commits", "Findings", "Open questions"),
-        ):
-            with self.assertRaises(ValidationError):
-                parse_result_sections("\n".join(f"# {h}" for h in headings))
+    def test_status_distinguishes_terminal_turn_from_integration(self):
+        self.assertEqual(
+            derive_assignment_status(
+                event_kinds=("assignment-launched", "result-ready"),
+                has_result=True,
+                has_integration=False,
+            ),
+            "result-ready",
+        )
+        self.assertEqual(
+            derive_assignment_status(
+                event_kinds=("result-ready", "assignment-integrated"),
+                has_result=True,
+                has_integration=True,
+            ),
+            "integrated",
+        )
 
     def test_status_derives_from_durable_records(self):
         self.assertEqual(

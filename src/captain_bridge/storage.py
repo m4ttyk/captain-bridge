@@ -118,6 +118,27 @@ class Storage:
                 return candidate
         raise NotFoundError("ship not found")
 
+    def resolve_ship_for_repository(self, repository: str | Path) -> Path:
+        repository = Path(repository).expanduser().resolve()
+        matches: list[Path] = []
+        if not self.ships_dir.is_dir():
+            raise NotFoundError(f"no ship registered for repository: {repository}")
+        for ship in sorted(self.ships_dir.iterdir(), key=lambda path: path.name):
+            if not ship.is_dir() or ship.name.startswith("."):
+                continue
+            if not (ship / "metadata.json").exists() or not (ship / "index.md").exists():
+                continue
+            metadata = self.read_json(ship / "metadata.json")
+            registered = metadata.get("repoDir") if isinstance(metadata, dict) else None
+            if isinstance(registered, str) and Path(registered).expanduser().resolve() == repository:
+                matches.append(ship.resolve())
+        if len(matches) > 1:
+            paths = ", ".join(str(path) for path in matches)
+            raise ConflictError(f"multiple ships registered for repository {repository}: {paths}")
+        if not matches:
+            raise NotFoundError(f"no ship registered for repository: {repository}")
+        return matches[0]
+
     def append_event(self, ship, event):
         path = Path(ship) / "events"
         path.mkdir(parents=True, exist_ok=True)

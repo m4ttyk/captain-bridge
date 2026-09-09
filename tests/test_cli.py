@@ -193,7 +193,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(event["event"]["assignmentId"], assignment_id)
         self.assertEqual(len(list((ship / "events").glob("*.json"))), 2)
 
-    def test_result_ready_requires_valid_assignment_result(self):
+    def test_result_ready_records_terminal_response_without_result_file(self):
         created = self.json_ok("ship", "create", str(self.repo), "demo")
         ship = Path(created["path"])
         selected_env = self.env | {"CAPTAIN_BRIDGE_SHIP": str(ship)}
@@ -209,43 +209,62 @@ class CliContractTests(unittest.TestCase):
         )
         assignment_id = assignment["id"]
         baseline_events = list((ship / "events").glob("*.json"))
-        self.assertEqual(len(baseline_events), 1)
-
-        event_args = ("_event", "emit", "--kind", "result-ready", "--assignment", assignment_id)
-
-        missing = self.run_cli(*event_args, cwd=self.outside, env=selected_env)
-        self.assertEqual(missing.returncode, 3)
-        self.assertIn("assignment result not found", missing.stderr)
-        self.assertEqual(list((ship / "events").glob("*.json")), baseline_events)
-
-        result_path = ship / "assignments" / assignment_id / "result.md"
-        result_path.write_text("## Outcome\nincomplete\n", encoding="utf-8")
-        malformed = self.run_cli(*event_args, cwd=self.outside, env=selected_env)
-        self.assertEqual(malformed.returncode, 2)
-        self.assertIn("result.md must contain these headings", malformed.stderr)
-        self.assertEqual(list((ship / "events").glob("*.json")), baseline_events)
-
-        result_path.write_text(
-            "## Outcome\nDone\n## Commits\nNone\n## Verification\nPassed\n"
-            "## Findings\nNone\n## Open questions\nNone\n",
-            encoding="utf-8",
-        )
-        valid = self.json_ok(*event_args, cwd=self.outside, env=selected_env)
-        self.assertEqual(valid["event"]["kind"], "result-ready")
-        self.assertEqual(len(list((ship / "events").glob("*.json"))), len(baseline_events) + 1)
-
-        other = self.json_ok(
+        event = self.json_ok(
             "_event",
             "emit",
             "--kind",
-            "session-started",
+            "result-ready",
             "--assignment",
             assignment_id,
+            "--response",
+            "Done, despite malformed prose",
             cwd=self.outside,
             env=selected_env,
         )
-        self.assertEqual(other["event"]["kind"], "session-started")
-        self.assertEqual(len(list((ship / "events").glob("*.json"))), len(baseline_events) + 2)
+        self.assertEqual(event["event"]["kind"], "result-ready")
+        self.assertEqual(event["event"]["response"], "Done, despite malformed prose")
+        self.assertFalse(event["officerWoken"])
+        self.assertEqual(len(list((ship / "events").glob("*.json"))), len(baseline_events) + 1)
+
+    def test_ship_list_enumerates_sorted_metadata_without_creating_missing_home(self):
+        created = [
+            self.json_ok("ship", "create", str(self.repo), "zeta"),
+            self.json_ok("ship", "create", str(self.repo), "alpha"),
+        ]
+        expected = []
+        for item in created:
+            ship = Path(item["path"]).resolve()
+            self.assertTrue(ship.is_absolute())
+            self.assertTrue(ship.is_dir())
+            metadata = json.loads((ship / "metadata.json").read_text(encoding="utf-8"))
+            expected.append({**metadata, "shipPath": str(ship)})
+        expected.sort(key=lambda item: Path(item["shipPath"]).name)
+
+        selected_env = self.env | {"CAPTAIN_BRIDGE_SHIP": created[0]["path"]}
+        listed = self.json_ok("ship", "list", "--json", env=selected_env)
+        self.assertEqual(listed, expected)
+        self.assertTrue(all(Path(item["shipPath"]).is_dir() for item in listed))
+
+        table = self.run_cli("ship", "list", env=selected_env)
+        self.assertEqual(table.returncode, 0, table.stderr)
+        self.assertEqual(table.stderr, "")
+        self.assertTrue(table.stdout.endswith("\n"))
+        for header in ("ID", "NAME", "REPO", "SHIP PATH"):
+            self.assertIn(header, table.stdout)
+        for item in listed:
+            for value in (item["shipId"], item["name"], item["repoDir"], item["shipPath"]):
+                self.assertIn(value, table.stdout)
+
+        missing_home = self.root / "missing-home"
+        missing_env = selected_env | {"CAPTAIN_BRIDGE_HOME": str(missing_home)}
+        self.assertEqual(self.json_ok("ship", "list", "--json", env=missing_env), [])
+        empty = self.run_cli("ship", "list", env=missing_env)
+        self.assertEqual(empty.returncode, 0, empty.stderr)
+        self.assertEqual(empty.stderr, "")
+        self.assertTrue(empty.stdout.strip())
+        self.assertRegex(empty.stdout.lower(), r"\bno\b.*\bships?\b|\bships?\b.*\bno\b")
+        self.assertFalse(missing_home.exists())
+
 
     def test_json_errors_are_stderr_only_with_exit_code(self):
         result = self.run_cli(
