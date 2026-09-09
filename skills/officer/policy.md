@@ -1,0 +1,1 @@
+../../src/captain_bridge/resources/officer.md

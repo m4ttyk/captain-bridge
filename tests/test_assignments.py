@@ -51,6 +51,11 @@ class AssignmentTests(unittest.TestCase):
         self.assignment_env = (ship, repo)
 
     def patch_runtime(self, mocked):
+        if not hasattr(mocked, "_canonical_worktree"):
+            mocked._canonical_worktree = (
+                lambda repo, assignment_id, repository_mode:
+                repo if repository_mode == "read" else repo / ".worktrees" / assignment_id
+            )
         runtime_patch = patch.object(assignments, "runtime", mocked)
         runtime_patch.start()
         self.addCleanup(runtime_patch.stop)
@@ -206,9 +211,9 @@ class AssignmentTests(unittest.TestCase):
         worktree.mkdir()
         record["runtime"] = {"agentName": "a", "paneId": "p", "worktreeDir": str(worktree)}
         (directory / "assignment.json").write_text(json.dumps(record))
-        (directory / "result.md").write_text(
-            "## Outcome\nDone\n## Commits\nNone\n## Verification\nChecked\n"
-            "## Findings\nNone\n## Open questions\nNone\n"
+        (ship / "events").mkdir(exist_ok=True)
+        (ship / "events" / "event_result.json").write_text(
+            json.dumps({"id": "event_result", "kind": "result-ready", "assignmentId": record["id"], "response": "Done\n\nChecked"})
         )
         pending = {
             "id": "decision_23456789",
@@ -224,7 +229,7 @@ class AssignmentTests(unittest.TestCase):
         view = assignments.inspect_assignment(ship, record["id"])
 
         assert view["status"] == "result-ready"
-        assert view["result"]["Commits"] == "None"
+        assert view["result"] == "Done\n\nChecked"
         assert view["pendingDecisions"] == [pending]
         assert view["runtime"] == observed
         assert view["worktreeExists"] is True
@@ -357,19 +362,20 @@ class AssignmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ConflictError, "must be integrated"):
             assignments.cleanup_assignment(ship, write_record["id"])
 
-
     def test_cleanup_removes_integrated_writable_worktree_with_git(self):
         ship, _ = self.assignment_env
         record = self.create()
         directory = ship / "assignments" / record["id"]
-        worktree = (Path(record["repoDir"]).parent / ".captain-bridge-worktrees" / record["id"]).resolve()
+        worktree = (Path(record["repoDir"]) / ".worktrees" / record["id"]).resolve()
         worktree.mkdir(parents=True)
         record["runtime"] = {"agentName": "crew", "paneId": "p", "worktreeDir": str(worktree)}
         (directory / "assignment.json").write_text(json.dumps(record))
         (directory / "integration.json").write_text(json.dumps({"commit": "a" * 40}))
+
         def remove_worktree(repo, *args, **kwargs):
             worktree.rmdir()
             return self.git_result(args)
+
         git = Mock(side_effect=remove_worktree)
         self.patch_git(git)
         self.patch_runtime(SimpleNamespace(observe_assignment=lambda *_: {"available": False, "status": "missing"}))
@@ -378,11 +384,45 @@ class AssignmentTests(unittest.TestCase):
 
         assert result["worktreeRemoved"] is True
         assert git.call_args.args[1:] == ("worktree", "remove", str(worktree.resolve()))
+
+    def test_cleanup_does_not_orphan_legacy_worktree_without_binding(self):
+        ship, _ = self.assignment_env
+        record = self.create()
+        directory = ship / "assignments" / record["id"]
+        legacy = Path(record["repoDir"]).parent / ".captain-bridge-worktrees" / record["id"]
+        legacy.mkdir(parents=True)
+        (directory / "integration.json").write_text(json.dumps({"commit": "a" * 40}))
+        self.patch_runtime(SimpleNamespace(observe_assignment=lambda *_: {"available": False, "status": "missing"}))
+        git = self.patch_git(Mock())
+
+        with self.assertRaisesRegex(ConflictError, "legacy worktree"):
+            assignments.cleanup_assignment(ship, record["id"])
+        git.assert_not_called()
+
+    def test_cleanup_rejects_symlinked_owned_worktree(self):
+        ship, _ = self.assignment_env
+        record = self.create()
+        directory = ship / "assignments" / record["id"]
+        worktree = (Path(record["repoDir"]) / ".worktrees" / record["id"]).resolve()
+        worktree.parent.mkdir(parents=True)
+        target = Path(self._tmp.name) / "outside"
+        target.mkdir()
+        worktree.symlink_to(target, target_is_directory=True)
+        record["runtime"] = {"agentName": "crew", "paneId": "p", "worktreeDir": str(worktree)}
+        (directory / "assignment.json").write_text(json.dumps(record))
+        (directory / "integration.json").write_text(json.dumps({"commit": "a" * 40}))
+        self.patch_runtime(SimpleNamespace(observe_assignment=lambda *_: {"available": False, "status": "missing"}))
+        git = self.patch_git(Mock())
+
+        with self.assertRaisesRegex(ConflictError, "unsafe"):
+            assignments.cleanup_assignment(ship, record["id"])
+        git.assert_not_called()
+
     def test_cleanup_is_idempotent_under_cleanup_lock(self):
         ship, _ = self.assignment_env
         record = self.create()
         directory = ship / "assignments" / record["id"]
-        worktree = (Path(record["repoDir"]).parent / ".captain-bridge-worktrees" / record["id"]).resolve()
+        worktree = (Path(record["repoDir"]) / ".worktrees" / record["id"]).resolve()
         worktree.mkdir(parents=True)
         record["runtime"] = {"agentName": "crew", "paneId": "p", "worktreeDir": str(worktree)}
         directory.joinpath("assignment.json").write_text(json.dumps(record))

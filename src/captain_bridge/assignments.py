@@ -17,7 +17,6 @@ from .domain import (
     derive_assignment_status,
     new_id,
     now,
-    parse_result_sections,
     require_text,
     validate_id,
     validate_slug,
@@ -99,6 +98,15 @@ def _events(ship: Path, assignment_id: str) -> list[dict[str, Any]]:
             events.append(event)
     return sorted(events, key=lambda item: (item.get("at", ""), item.get("id", "")))
 
+def _latest_response(events: list[dict[str, Any]]) -> str | None:
+    for event in reversed(events):
+        if event.get("kind") == "result-ready" and "response" in event:
+            response = event["response"]
+            return response if isinstance(response, str) else None
+    return None
+
+
+
 
 def _require_complete_runtime_binding(binding: Any) -> dict[str, Any]:
     if not isinstance(binding, dict):
@@ -109,20 +117,39 @@ def _require_complete_runtime_binding(binding: Any) -> dict[str, Any]:
     return binding
 
 
-def _canonical_worktree(assignment: dict[str, Any], assignment_id: str) -> Path:
+def _canonical_worktree(
+    assignment: dict[str, Any],
+    assignment_id: str,
+    repo: Path | None = None,
+) -> Path:
     repo_dir = assignment.get("repoDir")
     if not isinstance(repo_dir, str) or not repo_dir:
         raise ValidationError("assignment repoDir is required")
-    return (Path(repo_dir).expanduser().resolve().parent / ".captain-bridge-worktrees" / assignment_id).resolve()
+    repository_mode = assignment.get("repository")
+    if repo is None:
+        repo = Path(repo_dir).expanduser().resolve()
+    return runtime._canonical_worktree(repo, assignment_id, repository_mode)
 
 
-def _safe_worktree(assignment: dict[str, Any], assignment_id: str, raw: Any) -> Path:
+def _safe_worktree(
+    assignment: dict[str, Any],
+    assignment_id: str,
+    raw: Any,
+    repo: Path | None = None,
+) -> Path:
     if not isinstance(raw, str) or not raw:
         raise ConflictError(f"assignment {assignment_id} has no safe worktree path")
-    path = Path(raw).expanduser().resolve()
-    if path != _canonical_worktree(assignment, assignment_id):
+    path = Path(raw).expanduser().absolute()
+    canonical = _canonical_worktree(assignment, assignment_id, repo).absolute()
+    if path != canonical:
         raise ConflictError(f"assignment {assignment_id} worktree path is not assignment-owned")
+    _assert_safe_worktree(path, assignment_id)
     return path
+
+
+def _assert_safe_worktree(path: Path, assignment_id: str) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ConflictError(f"assignment {assignment_id} worktree path is unsafe")
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -226,21 +253,21 @@ def inspect_assignment(ship: Path, assignment_id: str) -> dict:
     ship = storage.resolve_ship(ship)
     directory, assignment = _load_assignment(storage, ship, assignment_id)
     events = _events(ship, assignment_id)
-    result_path = directory / "result.md"
-    sections = parse_result_sections(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
+    response = _latest_response(events)
     integration_path = directory / "integration.json"
     integration = storage.read_json(integration_path) if integration_path.exists() else None
     observed = runtime.observe_assignment(ship, assignment) if assignment.get("runtime") else None
     worktree = (assignment.get("runtime") or {}).get("worktreeDir")
+    has_result = any(event.get("kind") == "result-ready" for event in events)
     status = derive_assignment_status(
         event_kinds=(event.get("kind", "") for event in events),
-        has_result=sections is not None,
+        has_result=has_result,
         has_integration=integration is not None,
     )
     return {
         "assignment": assignment,
         "status": status,
-        "result": sections,
+        "result": response,
         "events": events,
         "pendingDecisions": decisions.pending_decisions(ship, assignment_id),
         "runtime": observed,
@@ -351,11 +378,19 @@ def cleanup_assignment(ship: Path, assignment_id: str) -> dict:
         if assignment.get("repository") == "worktree":
             binding = assignment.get("runtime")
             raw_worktree = binding.get("worktreeDir") if isinstance(binding, dict) else None
+            if not raw_worktree:
+                legacy_worktree = repo.parent / ".captain-bridge-worktrees" / assignment_id
+                if legacy_worktree.exists() or legacy_worktree.is_symlink():
+                    raise ConflictError(
+                        f"assignment {assignment_id} has a legacy worktree at {legacy_worktree}; "
+                        "refusing cleanup without explicit migration"
+                    )
             worktree_path = (
-                _safe_worktree(assignment, assignment_id, raw_worktree)
+                _safe_worktree(assignment, assignment_id, raw_worktree, repo)
                 if raw_worktree
-                else _canonical_worktree(assignment, assignment_id)
+                else _canonical_worktree(assignment, assignment_id, repo)
             )
+            _assert_safe_worktree(worktree_path, assignment_id)
             if worktree_path.exists():
                 if worktree_path == repo:
                     raise ConflictError("refusing to remove the target repository as an assignment worktree")

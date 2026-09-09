@@ -5,19 +5,17 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
-
-from . import assignments, decisions, memory, runtime
+from . import assignments, decisions, memory, runtime, startup
 from .domain import (
     CaptainError,
     NotFoundError,
     ValidationError,
     new_id,
     now,
-    parse_result_sections,
     validate_event_kind,
     validate_id,
 )
-from .ships import create_ship, open_ship, reconcile
+from .ships import create_ship, list_ships, open_ship, reconcile
 from .storage import Storage
 
 
@@ -57,23 +55,21 @@ def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     assignment_id = None
     if args.assignment is not None:
         assignment_id = validate_id(args.assignment, "assignment")
-    if kind == "result-ready":
-        if assignment_id is None:
-            raise ValidationError("result-ready requires an assignment")
-        result_path = ship / "assignments" / assignment_id / "result.md"
-        try:
-            result_text = result_path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise NotFoundError(f"assignment result not found: {result_path}") from exc
-        except OSError as exc:
-            raise ValidationError(f"cannot read assignment result: {result_path}") from exc
-        parse_result_sections(result_text)
+    if kind == "result-ready" and assignment_id is None:
+        raise ValidationError("result-ready requires an assignment")
+    response = _text(
+        getattr(args, "response", None),
+        getattr(args, "response_file", None),
+        "response",
+        required=False,
+    )
     event = {
         "id": new_id("event"),
         "kind": kind,
         "at": now(),
         **({"assignmentId": assignment_id} if assignment_id else {}),
         **({"sessionId": args.session_id} if args.session_id else {}),
+        **({"response": response} if response is not None else {}),
     }
     storage.append_event(ship, event)
     woken = False
@@ -81,12 +77,30 @@ def _record_event(args: argparse.Namespace) -> dict[str, Any]:
     if kind == "result-ready":
         try:
             woken = bool(runtime.wake_officer(ship, event))
+            if not woken:
+                wake_error = "officer nudge was not delivered"
         except CaptainError as exc:
             wake_error = str(exc)
     result = {"event": event, "officerWoken": woken}
     if wake_error is not None:
         result["wakeError"] = wake_error
     return result
+
+
+def _render_ship_table(ships: list[dict[str, Any]]) -> str:
+    if not ships:
+        return "No ships found\n"
+    columns = (("ID", "shipId"), ("NAME", "name"), ("REPO", "repoDir"), ("SHIP PATH", "shipPath"))
+    rows = [[("" if ship.get(key) is None else str(ship.get(key))) for _, key in columns] for ship in ships]
+    widths = [max(len(header), *(len(row[index]) for row in rows)) for index, (header, _) in enumerate(columns)]
+    lines = [
+        "  ".join(header.ljust(width) for (header, _), width in zip(columns, widths)).rstrip(),
+        *[
+            "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
+            for row in rows
+        ],
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _run_ship(args: argparse.Namespace) -> Any:
@@ -96,6 +110,8 @@ def _run_ship(args: argparse.Namespace) -> Any:
         if not repo or not slug:
             raise ValidationError("ship create requires repo and slug")
         return create_ship(repo, slug)
+    if args.action == "list":
+        return list_ships()
     if args.action == "open":
         return open_ship(args.path or args.ship)
     if args.action == "reconcile":
@@ -192,6 +208,8 @@ def _run_event(args: argparse.Namespace) -> Any:
 
 
 def _run(args: argparse.Namespace) -> Any:
+    if args.group == "start":
+        return startup.start(args.omp_args)
     if args.group == "ship":
         return _run_ship(args)
     if args.group == "assignment":
@@ -208,6 +226,8 @@ def _run(args: argparse.Namespace) -> Any:
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="captain-bridge")
     groups = parser.add_subparsers(dest="group", required=True)
+    start = groups.add_parser("start", help="open the current ship and start the Captain Bridge Officer")
+    start.add_argument("omp_args", nargs=argparse.REMAINDER)
 
     ship = groups.add_parser("ship")
     ship_sub = ship.add_subparsers(dest="action", required=True)
@@ -216,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("slug", nargs="?")
     create.add_argument("--repo", "--repo-dir", dest="repo_opt")
     create.add_argument("--slug", dest="slug_opt")
+    list_cmd = ship_sub.add_parser("list")
+    list_cmd.add_argument("--json", action="store_true")
     open_cmd = ship_sub.add_parser("open")
     open_cmd.add_argument("path", nargs="?")
     open_cmd.add_argument("--ship")
@@ -297,12 +319,16 @@ def build_parser() -> argparse.ArgumentParser:
     emit.add_argument("--kind", required=True)
     emit.add_argument("--assignment", "--assignment-id", dest="assignment")
     emit.add_argument("--session-id")
+    emit.add_argument("--response", "--response-text", dest="response")
+    emit.add_argument("--response-file")
     return parser
 
-
 def main(argv: list[str] | None = None) -> int:
+    command = list(sys.argv[1:] if argv is None else argv)
     try:
-        args = build_parser().parse_args(argv)
+        if command and command[0] == "start":
+            return startup.main(command[1:])
+        args = build_parser().parse_args(command)
         result = _run(args)
     except CaptainError as exc:
         print(
@@ -324,5 +350,8 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 5
-    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    if args.group == "ship" and args.action == "list" and not args.json:
+        print(_render_ship_table(result), end="")
+    else:
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0

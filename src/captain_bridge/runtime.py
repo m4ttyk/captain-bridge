@@ -82,7 +82,6 @@ def _herdr(args: list[str], *, optional: bool = False) -> dict[str, Any] | None:
         raise OperationError("Herdr returned an invalid result")
     return result
 
-
 def _start_agent_when_pane_ready(start_args: list[str]) -> dict[str, Any] | None:
     for attempt in range(len(_PANE_START_RETRY_DELAYS) + 1):
         if attempt:
@@ -93,6 +92,8 @@ def _start_agent_when_pane_ready(start_args: list[str]) -> dict[str, Any] | None
             if error.code != "agent_pane_busy" or attempt == len(_PANE_START_RETRY_DELAYS):
                 raise
     raise AssertionError("unreachable")
+
+
 
 
 def _field(data: dict[str, Any], *names: str) -> Any:
@@ -152,10 +153,100 @@ def _repo_dir(ship_dir: Path, assignment: dict[str, Any]) -> Path:
     return assignment_repo
 
 
+def _parse_worktree_path(raw: str) -> str:
+    if not raw.startswith('"'):
+        return raw
+    if len(raw) < 2 or not raw.endswith('"'):
+        raise OperationError("git worktree list returned an invalid primary checkout")
+    encoded = bytearray()
+    index = 1
+    escapes = {
+        "\\": b"\\",
+        '"': b'"',
+        "a": b"\a",
+        "b": b"\b",
+        "t": b"\t",
+        "n": b"\n",
+        "v": b"\v",
+        "f": b"\f",
+        "r": b"\r",
+    }
+    while index < len(raw) - 1:
+        char = raw[index]
+        if char != "\\":
+            encoded.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(raw) - 1:
+            raise OperationError("git worktree list returned an invalid primary checkout")
+        escaped = raw[index]
+        if escaped in escapes:
+            encoded.extend(escapes[escaped])
+            index += 1
+            continue
+        if escaped not in "01234567":
+            raise OperationError("git worktree list returned an invalid primary checkout")
+        end = index + 1
+        while end < len(raw) - 1 and end < index + 3 and raw[end] in "01234567":
+            end += 1
+        encoded.append(int(raw[index:end], 8))
+        index = end
+    try:
+        return encoded.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise OperationError("git worktree list returned an invalid primary checkout") from error
+
+
+def _primary_checkout(repo: Path) -> Path:
+    listed = _run(["git", "worktree", "list", "--porcelain"], cwd=repo)
+    if listed.returncode:
+        detail = listed.stderr.strip() or listed.stdout.strip() or f"exit {listed.returncode}"
+        raise OperationError(f"could not list Git worktrees: {detail}")
+    for line in listed.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        raw = _parse_worktree_path(line[len("worktree ") :])
+        if not raw or not Path(raw).is_absolute():
+            raise OperationError("git worktree list returned an invalid primary checkout")
+        return Path(raw).expanduser().resolve()
+    raise OperationError("git worktree list returned no primary checkout")
+
+
+def _ensure_worktree_ignored(primary: Path) -> None:
+    git_dir = primary / ".git"
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        raise OperationError(f"primary checkout has no usable .git directory: {git_dir}")
+    info_dir = git_dir / "info"
+    if info_dir.is_symlink():
+        raise OperationError(f"primary checkout Git info directory is a symlink: {info_dir}")
+    try:
+        info_dir.mkdir(parents=True, exist_ok=True)
+        exclude = info_dir / "exclude"
+        if exclude.is_symlink():
+            raise OperationError(f"primary checkout Git exclude file is a symlink: {exclude}")
+        current = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if any(
+            line.strip() in {".worktrees", ".worktrees/", "/.worktrees", "/.worktrees/"}
+            for line in current.splitlines()
+        ):
+            return
+        separator = "" if not current or current.endswith("\n") else "\n"
+        exclude.write_text(f"{current}{separator}/.worktrees/\n", encoding="utf-8")
+    except OperationError:
+        raise
+    except (OSError, UnicodeError) as error:
+        raise OperationError(f"could not update local Git excludes: {error}") from error
+
+
 def _canonical_worktree(repo: Path, assignment_id: str, repository_mode: str) -> Path:
+    validate_id(assignment_id, "assignment")
     if repository_mode == "read":
         return repo
-    return repo.parent / ".captain-bridge-worktrees" / assignment_id
+    if repository_mode != "worktree":
+        raise ValidationError(f"invalid assignment repository mode: {repository_mode!r}")
+    primary = _primary_checkout(repo)
+    return primary / ".worktrees" / assignment_id
 
 
 def _prompt_path(ship_dir: Path, assignment: dict[str, Any], assignment_id: str) -> Path:
@@ -195,18 +286,6 @@ def _current_pane_target(current: dict[str, Any]) -> Any:
     pane = current.get("pane") if isinstance(current.get("pane"), dict) else current
     return _field(pane, "name", "pane_id", "paneId")
 
-
-def _officer_target(ship_dir: Path, current: dict[str, Any]) -> str:
-    target = (
-        _persisted_officer_target(_read_persisted_officer(ship_dir))
-        or _environment_officer_target()
-        or _current_pane_target(current)
-    )
-    if not isinstance(target, str) or not target:
-        raise OperationError("current Officer could not be identified")
-    return target
-
-
 def _current_workspace_id(current: dict[str, Any]) -> str:
     workspace = current.get("workspace")
     if isinstance(workspace, str) and workspace:
@@ -223,13 +302,31 @@ def _current_workspace_id(current: dict[str, Any]) -> str:
             return value
     raise OperationError("current Officer workspace could not be identified")
 
+def _officer_target(ship_dir: Path, current: dict[str, Any]) -> str:
+    target = (
+        _persisted_officer_target(_read_persisted_officer(ship_dir))
+        or _environment_officer_target()
+        or _current_pane_target(current)
+    )
+    if not isinstance(target, str) or not target:
+        raise OperationError("current Officer could not be identified")
+    return target
 
-def _create_worktree(repo: Path, assignment_id: str) -> Path:
-    worktree = repo.parent / ".captain-bridge-worktrees" / assignment_id
-    branch = f"captain/{assignment_id}"
-    if worktree.exists():
+
+def _create_worktree(
+    repo: Path,
+    assignment_id: str,
+    canonical_worktree: Path | None = None,
+) -> Path:
+    worktree = canonical_worktree or _canonical_worktree(repo, assignment_id, "worktree")
+    root = worktree.parent
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ConflictError(f"assignment worktree root is not a directory: {root}")
+    if os.path.lexists(worktree):
         raise ConflictError(f"partial launch already created worktree: {worktree}")
-    worktree.parent.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    _ensure_worktree_ignored(worktree.parent.parent)
+    branch = f"captain/{assignment_id}"
     ref = _run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo)
     if ref.returncode not in (0, 1):
         raise OperationError(ref.stderr.strip() or "could not inspect assignment branch")
@@ -253,12 +350,15 @@ def _teardown_launch(repo: Path, tab_id: str | None, worktree: Path | None) -> N
                 failures.append(f"tab close failed: {detail}")
         except Exception as error:
             failures.append(f"tab close raised {error}")
-    if worktree is not None and worktree.exists():
+    if worktree is not None and os.path.lexists(worktree):
         try:
-            result = _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo)
-            if result.returncode:
-                detail = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
-                failures.append(f"worktree removal failed: {detail}")
+            if worktree.is_symlink() or worktree.parent.is_symlink():
+                failures.append(f"refusing to remove unsafe assignment worktree: {worktree}")
+            else:
+                result = _run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo)
+                if result.returncode:
+                    detail = result.stderr.strip() or result.stdout.strip() or str(result.returncode)
+                    failures.append(f"worktree removal failed: {detail}")
         except Exception as error:
             failures.append(f"worktree removal raised {error}")
     if failures:
@@ -286,13 +386,13 @@ def _start_fresh_resources(
     agent_name: str,
     repo: Path,
     repository_mode: str,
-    canonical_worktree: Path,
 ) -> dict[str, Any]:
     live = _agent(_herdr(["agent", "get", agent_name], optional=True))
     if live:
         raise ConflictError(
             f"live Herdr agent exists without persisted launch facts: {agent_name}"
         )
+    canonical_worktree = _canonical_worktree(repo, assignment_id, repository_mode)
     if repository_mode == "worktree" and canonical_worktree.exists():
         raise ConflictError(
             f"partial launch found worktree without matching agent: {canonical_worktree}"
@@ -303,16 +403,18 @@ def _start_fresh_resources(
     tab_id: str | None = None
     pane_id: str | None = None
     try:
-        worktree = repo if repository_mode == "read" else _create_worktree(repo, assignment_id)
+        worktree = repo if repository_mode == "read" else _create_worktree(
+            repo, assignment_id, canonical_worktree
+        )
         current = _herdr(["pane", "current", "--current"])
         assert current is not None
         officer = _officer_target(ship, current)
-        workspace_id = _current_workspace_id(current)
+
         created = _herdr([
             "tab",
             "create",
             "--workspace",
-            workspace_id,
+            _current_workspace_id(current),
             "--cwd",
             str(worktree),
             "--label",
@@ -336,7 +438,7 @@ def _start_fresh_resources(
             raise OperationError("Herdr tab create did not return a root pane ID")
 
         start_args = ["agent", "start", agent_name, "--kind", "omp", "--pane", pane_id]
-        agent_options: list[str] = []
+        agent_options: list[str] = ["--cwd", str(worktree)]
         if assignment.get("model"):
             agent_options.extend(["--model", str(assignment["model"])])
         if assignment.get("effort"):
@@ -372,7 +474,6 @@ def launch_assignment(
     if repository_mode not in {"read", "worktree"}:
         raise ValidationError(f"invalid assignment repository mode: {repository_mode!r}")
     repo = _repo_dir(ship, assignment)
-    canonical_worktree = _canonical_worktree(repo, assignment_id, repository_mode)
     binding = _binding(assignment)
     if any(binding.values()):
         return _validate_existing_binding(binding, agent_name)
@@ -383,7 +484,6 @@ def launch_assignment(
         agent_name,
         repo,
         repository_mode,
-        canonical_worktree,
     )
 
 

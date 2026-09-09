@@ -24,6 +24,25 @@ def _officer_from_environment() -> dict[str, str]:
     return officer
 
 
+def list_ships(*, storage: Storage | None = None) -> list[dict[str, Any]]:
+    storage = storage or Storage()
+    if not storage.ships_dir.is_dir():
+        return []
+
+    ships: list[dict[str, Any]] = []
+    for ship in sorted(storage.ships_dir.iterdir(), key=lambda path: path.name):
+        if ship.name.startswith(".") or not ship.is_dir():
+            continue
+        metadata_path = ship / "metadata.json"
+        if not metadata_path.exists() or not (ship / "index.md").exists():
+            continue
+        metadata = storage.read_json(metadata_path)
+        if not isinstance(metadata, dict):
+            raise ValidationError(f"invalid ship metadata: {metadata_path}")
+        ships.append({**metadata, "shipPath": str(ship.resolve())})
+    return ships
+
+
 def _read_decision_records(ship: Path) -> list[dict[str, Any]]:
     import json
 
@@ -90,7 +109,12 @@ def create_ship(
     return reconcile(ship, storage=storage)
 
 
-def open_ship(path: str | Path | None = None, *, storage: Storage | None = None) -> dict[str, Any]:
+def open_ship(
+    path: str | Path | None = None,
+    *,
+    storage: Storage | None = None,
+    officer: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     storage = storage or Storage()
     storage.ensure_defaults()
     ship = storage.resolve_ship(path)
@@ -102,11 +126,14 @@ def open_ship(path: str | Path | None = None, *, storage: Storage | None = None)
     if not repo.exists() or not (repo / ".git").exists():
         raise ValidationError(f"ship repository missing: {repo}")
     officer_path = ship / "officer.json"
-    officer = storage.read_json(officer_path) if officer_path.exists() else {}
-    current = _officer_from_environment()
-    if current and current != officer:
-        officer = current
-        storage.atomic_write_json(officer_path, officer)
+    persisted = storage.read_json(officer_path) if officer_path.exists() else {}
+    if officer is not None:
+        if officer != persisted:
+            storage.atomic_write_json(officer_path, officer)
+    else:
+        current = _officer_from_environment()
+        if current and current != persisted:
+            storage.atomic_write_json(officer_path, current)
     return reconcile(ship, storage=storage)
 
 

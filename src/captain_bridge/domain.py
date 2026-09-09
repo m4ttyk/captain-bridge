@@ -16,12 +16,10 @@ PI_EVENT_KINDS = {
     "session-shutdown",
     "result-ready",
 }
-RESULT_SECTIONS = ("Outcome", "Commits", "Verification", "Findings", "Open questions")
 
 _ID_RE = re.compile(r"^(ship|assignment|decision|memory|event)_([23456789abcdefghjkmnpqrstuvwxyz]{8})$")
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _EVENT_KIND_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 
 
 class CaptainError(Exception):
@@ -112,24 +110,6 @@ def decision_mode(confidence: str, requested: str | None = None) -> str:
     return requested
 
 
-def parse_result_sections(text: str) -> dict[str, str]:
-    found: list[tuple[str, int]] = []
-    canonical = {name.casefold(): name for name in RESULT_SECTIONS}
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        match = _HEADING_RE.fullmatch(line)
-        if match and match.group(1).strip().casefold() in canonical:
-            found.append((canonical[match.group(1).strip().casefold()], index))
-    names = [item[0] for item in found]
-    if names != list(RESULT_SECTIONS):
-        raise ValidationError(
-            "result.md must contain these headings once and in order: " + ", ".join(RESULT_SECTIONS)
-        )
-    sections: dict[str, str] = {}
-    for offset, (name, line_index) in enumerate(found):
-        end = found[offset + 1][1] if offset + 1 < len(found) else len(lines)
-        sections[name] = "\n".join(lines[line_index + 1 : end]).strip()
-    return sections
 
 
 def derive_assignment_status(

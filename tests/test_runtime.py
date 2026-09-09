@@ -84,10 +84,6 @@ class RuntimeTests(unittest.TestCase):
         prompt = run.call_args_list[-1].args[0]
         self.assertEqual(prompt, ["herdr", "agent", "prompt", ASSIGNMENT_ID, "Do the assigned work."])
         self.assertNotIn("--wait", prompt)
-        self.assertEqual(
-            run.call_args_list[3].args[0][-5:],
-            ["--", "--model", "test-model", "--thinking", "low"],
-        )
 
     @patch("captain_bridge.runtime.time.sleep")
     @patch("captain_bridge.runtime.subprocess.run")
@@ -127,6 +123,7 @@ class RuntimeTests(unittest.TestCase):
             if call.args[0][:3] == ["herdr", "agent", "prompt"]
         ]
         self.assertEqual(len(prompt_calls), 1)
+
 
     @patch("captain_bridge.runtime.time.sleep")
     @patch("captain_bridge.runtime.subprocess.run")
@@ -217,6 +214,12 @@ class RuntimeTests(unittest.TestCase):
     def test_worktree_launch_creates_named_branch_at_canonical_path(self, run):
         run.side_effect = [
             completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                f"worktree {self.repo.resolve()}\nHEAD {'a' * 40}\nbranch refs/heads/main\n\n",
+                "",
+            ),
             completed(returncode=1),
             completed(),
             completed({"result": {"pane": {"pane_id": "w1:p1", "name": "officer", "workspace_id": "w1"}}}),
@@ -232,13 +235,13 @@ class RuntimeTests(unittest.TestCase):
             completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
         ]
         assignment = {**self.assignment, "repository": "worktree"}
-        expected = (self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID).resolve()
+        expected = (self.repo / ".worktrees" / ASSIGNMENT_ID).resolve()
 
         binding = launch_assignment(self.ship, assignment)
 
         self.assertEqual(binding["worktreeDir"], str(expected))
         self.assertEqual(
-            run.call_args_list[2].args[0],
+            run.call_args_list[3].args[0],
             [
                 "git",
                 "worktree",
@@ -248,8 +251,78 @@ class RuntimeTests(unittest.TestCase):
                 str(expected),
             ],
         )
-        self.assertEqual(run.call_args_list[2].kwargs["cwd"], self.repo.resolve())
+        self.assertEqual(run.call_args_list[3].kwargs["cwd"], self.repo.resolve())
+        self.assertEqual(
+            (self.repo / ".git" / "info" / "exclude").read_text(),
+            "/.worktrees/\n",
+        )
 
+    @patch("captain_bridge.runtime.subprocess.run")
+    def test_linked_checkout_uses_primary_for_worktree_and_preserves_excludes(self, run):
+        primary = self.repo
+        linked = self.root / "linked"
+        linked.mkdir()
+        (linked / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'linked'}\n")
+        (primary / ".git" / "info").mkdir()
+        (primary / ".git" / "info" / "exclude").write_text("# local rules\n")
+        self.ship.joinpath("metadata.json").write_text(
+            json.dumps({"repoDir": str(linked)}), encoding="utf-8"
+        )
+        assignment = {**self.assignment, "repoDir": str(linked), "repository": "worktree"}
+        expected = (primary / ".worktrees" / ASSIGNMENT_ID).resolve()
+        run.side_effect = [
+            completed(returncode=1, stderr='{"error":{"code":"agent_not_found"}}'),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                (
+                    f"worktree {primary.resolve()}\nHEAD {'a' * 40}\nbranch refs/heads/main\n\n"
+                    f"worktree {linked.resolve()}\nHEAD {'b' * 40}\nbranch refs/heads/topic\n\n"
+                ),
+                "",
+            ),
+            completed(returncode=1),
+            completed(),
+            completed({"result": {"pane": {"pane_id": "w1:p1", "workspace_id": "w1"}}}),
+            completed(
+                {
+                    "result": {
+                        "tab": {"tab_id": "w1:t2"},
+                        "root_pane": {"pane_id": "w1:p2"},
+                    }
+                }
+            ),
+            completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
+            completed({"result": {"agent": {"name": ASSIGNMENT_ID}}}),
+        ]
+
+        binding = launch_assignment(self.ship, assignment)
+
+        self.assertEqual(binding["worktreeDir"], str(expected))
+        self.assertEqual(run.call_args_list[3].kwargs["cwd"], linked.resolve())
+        self.assertEqual(
+            (primary / ".git" / "info" / "exclude").read_text(),
+            "# local rules\n/.worktrees/\n",
+        )
+    @patch("captain_bridge.runtime.subprocess.run")
+    def test_existing_worktree_binding_is_not_migrated(self, run):
+        old_path = self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID
+        binding = {
+            "agentName": ASSIGNMENT_ID,
+            "paneId": "w1:p2",
+            "worktreeDir": str(old_path),
+            "launchedAt": "2026-01-01T00:00:00Z",
+        }
+        assignment = {**self.assignment, "repository": "worktree", "runtime": binding}
+        run.return_value = completed(
+            {"result": {"agent": {"name": ASSIGNMENT_ID, "pane_id": "w1:p2"}}}
+        )
+
+        with patch(
+            "captain_bridge.runtime._primary_checkout",
+            side_effect=AssertionError("existing assignments must not migrate"),
+        ):
+            self.assertEqual(launch_assignment(self.ship, assignment), binding)
     @patch("captain_bridge.runtime.subprocess.run")
     def test_repeated_launch_returns_complete_live_binding_without_duplication(self, run):
         binding = {
@@ -348,15 +421,16 @@ class RuntimeTests(unittest.TestCase):
         run.assert_called_once()
     @patch("captain_bridge.runtime.subprocess.run")
     def test_orphaned_worktree_is_a_partial_launch_conflict(self, run):
-        expected = self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID
+        expected = self.repo / ".worktrees" / ASSIGNMENT_ID
         expected.mkdir(parents=True)
         run.return_value = completed(
             returncode=1, stderr='{"error":{"code":"agent_not_found"}}'
         )
         assignment = {**self.assignment, "repository": "worktree"}
 
-        with self.assertRaisesRegex(ConflictError, "worktree without matching agent"):
-            launch_assignment(self.ship, assignment)
+        with patch("captain_bridge.runtime._primary_checkout", return_value=self.repo):
+            with self.assertRaisesRegex(ConflictError, "worktree without matching agent"):
+                launch_assignment(self.ship, assignment)
         run.assert_called_once()
 
     @patch("captain_bridge.runtime.subprocess.run")
@@ -401,11 +475,10 @@ class RuntimeTests(unittest.TestCase):
             },
         )
         run.assert_not_called()
-
     @patch("captain_bridge.runtime.subprocess.run")
     def test_prompt_failure_tears_down_created_tab_and_worktree(self, run):
         assignment = {**self.assignment, "repository": "worktree"}
-        expected = self.repo.parent / ".captain-bridge-worktrees" / ASSIGNMENT_ID
+        expected = self.repo / ".worktrees" / ASSIGNMENT_ID
 
         def create_worktree(*_):
             expected.mkdir(parents=True)
@@ -427,9 +500,10 @@ class RuntimeTests(unittest.TestCase):
             completed(),
             completed(),
         ]
-        with patch("captain_bridge.runtime._create_worktree", side_effect=create_worktree):
-            with self.assertRaises(OperationError):
-                launch_assignment(self.ship, assignment)
+        with patch("captain_bridge.runtime._primary_checkout", return_value=self.repo):
+            with patch("captain_bridge.runtime._create_worktree", side_effect=create_worktree):
+                with self.assertRaises(OperationError):
+                    launch_assignment(self.ship, assignment)
         self.assertEqual(run.call_args_list[-2].args[0], ["herdr", "tab", "close", "w1:t2"])
         self.assertEqual(run.call_args_list[-1].args[0][:3], ["git", "worktree", "remove"])
         self.assertEqual(run.call_args_list[-1].kwargs["cwd"], self.repo.resolve())
