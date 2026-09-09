@@ -3,7 +3,7 @@
 
 # Captain Bridge
 
-Captain Bridge is a local macOS orchestration MVP for Git, Herdr, and OMP-Pi. It gives one Officer durable authority over ships, assignments, decisions, and reusable memory. Runtime currently targets one local macOS user; it is not a multi-user service.
+Captain Bridge orchestrates Git, Herdr, and OMP for one local macOS user. The human is the captain; the Officer manages Herdr workers and is the only agent the human talks to.
 
 ## Prerequisites
 
@@ -12,36 +12,36 @@ Captain Bridge is a local macOS orchestration MVP for Git, Herdr, and OMP-Pi. It
 - Pi (OMP-Pi) and its local agent directories
 - Herdr when launching/inspecting agent work
 
-## Install and configure Pi
+## Install and configure OMP
 
 From this checkout:
 
 ```sh
 pipx install --editable .
-mkdir -p ~/.pi/agent/extensions ~/.pi/agent/skills
-ln -sf "$PWD/extensions/captain-bridge.ts" ~/.pi/agent/extensions/captain-bridge.ts
-ln -sfn "$PWD/skills/captain" ~/.pi/agent/skills/captain
+mkdir -p ~/.omp/agent/extensions ~/.omp/agent/skills
+ln -sfn "$PWD/extensions/captain-bridge.ts" ~/.omp/agent/extensions/captain-bridge.ts
+ln -sfn "$PWD/skills/officer" ~/.omp/agent/skills/officer
 ```
 
-Restart Pi after changing extension or skill links. The extension is `extensions/captain-bridge.ts`; the user skill is `skills/captain/SKILL.md`. The registered invocation is `/skill:captain`; the `/captain` alias is not yet registered.
+Restart OMP after updating the extension. For an existing installation, remove the old `~/.omp/agent/skills/captain` symlink if it points to this checkout. The optional manual skill is `/skill:officer`; normal startup activates the Officer automatically.
+
+Terminal worker turns notify the Officer through the extension. Final assistant text is stored in assignment events and exposed by `assignment inspect`; workers no longer write `result.md`. Notifications do not require report headings or nonempty text. Delivery errors are shown in the worker session; there is no polling or automatic recovery after a failed nudge.
+
+An editable installation must keep pointing at an existing checkout. If that checkout moves, rebind with `pipx install --force --editable /path/to/current/captain-bridge`.
 
 ## First ship
 
-Create a ship for an existing Git worktree (the command prints JSON, including the durable ship path):
+From your repository inside Herdr:
 
 ```sh
-cd /path/to/your/repo
-captain ship create . my-project
+captain start
 ```
 
-Keep the returned ship path, or discover it from the default state directory. To select it explicitly:
+The wrapper resolves the current checkout root, reuses its registered ship or creates one, binds the Officer, and starts OMP with the Officer policy. Existing live Officers are attached through Herdr when available. OMP arguments, including model selection and custom appended instructions, can follow `start`.
 
-```sh
-export CAPTAIN_BRIDGE_SHIP="$HOME/.captain-bridge/ships/$(basename "$PWD")-my-project"
-captain ship open
-```
+If multiple ships match the checkout, explicitly select one with `CAPTAIN_BRIDGE_SHIP`; the wrapper does not guess. Startup requires a Git checkout. `captain ship open` remains a state-reconciliation command, not an interactive launcher.
 
-Then invoke the Officer in Pi with `/skill:captain`. The Officer reconciles the ship, creates assignments before launching them, observes results, records decisions, and curates durable memory.
+Writable workers use `<main-checkout>/.worktrees/<assignment-id>`, including when the originating checkout is linked. The directory is ignored through Git's local exclude file. Existing external worktrees are not automatically moved or deleted. Nesting does not copy uncommitted files, load the main `.env`, or inject main-checkout skills; the Officer supplies task context.
 
 ## Normal workflow
 
@@ -69,8 +69,11 @@ Run `captain --help` and `captain <group> --help` for the complete command surfa
 
 Durable state defaults to `~/.captain-bridge/ships/`. Set `CAPTAIN_BRIDGE_HOME` to relocate it and `CAPTAIN_BRIDGE_SHIP` to select a ship. On first use, default authority and role files are copied into `$CAPTAIN_BRIDGE_HOME` (default `~/.captain-bridge/`); customize the Officer policy in `$CAPTAIN_BRIDGE_HOME/authority.md` (default `~/.captain-bridge/authority.md`) and role prompts in `$CAPTAIN_BRIDGE_HOME/roles/`. `CAPTAIN_BRIDGE_OFFICER_NAME` and `CAPTAIN_BRIDGE_OFFICER_ID` customize the Officer identity recorded for new or opened ships.
 
+Existing installed authority and role files are preserved. On upgrade, compare the packaged `src/captain_bridge/resources/authority.md` and `resources/roles/` with your installed copies and merge your customizations. In particular, remove old worker instructions requiring `result.md`; final assistant responses are now the report. The startup Officer policy is loaded directly from the installed package.
+
 ## Tests
 
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+bun tests/test_extension.ts
 ```
