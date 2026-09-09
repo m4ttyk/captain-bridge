@@ -62,9 +62,27 @@ export default function captainBridge(pi: ExtensionAPI) {
   if (!ship) return;
 
   const assignment = process.env.CAPTAIN_BRIDGE_ASSIGNMENT;
-  if (assignment === undefined) return;
+  const officerMode = process.env.CAPTAIN_BRIDGE_ROLE === "officer" && assignment === undefined;
+  if (!officerMode && assignment === undefined) return;
   const officer = process.env.CAPTAIN_BRIDGE_OFFICER;
   let binding: Binding | undefined;
+
+  if (officerMode) {
+    pi.on("session_start", async () => {
+      await pi.setActiveTools(
+        pi.getActiveTools().filter((name) => name !== "task" && name !== "eval" && !name.startsWith("vibe_")),
+      );
+    });
+    pi.on("tool_call", async (event) => {
+      if (event.toolName === "task" || event.toolName === "eval" || event.toolName.startsWith("vibe_")) {
+        return {
+          block: true,
+          reason: "Officer delegation is disabled; use the captain assignment CLI or Herdr to delegate work.",
+        };
+      }
+    });
+    return;
+  }
 
   function notify(ctx: ExtensionContext, message: string) {
     ctx.ui.notify(`Captain Bridge: ${message}`, "warning");

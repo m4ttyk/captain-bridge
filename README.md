@@ -43,6 +43,8 @@ The wrapper resolves the current checkout root, reuses its registered ship or cr
 
 If multiple ships match the checkout, explicitly select one with `CAPTAIN_BRIDGE_SHIP`; the wrapper does not guess. For startup, an inherited `CAPTAIN_BRIDGE_SHIP` from another checkout is ignored and the current checkout's ship is reused or created. Startup requires a Git checkout. `captain ship open` remains a state-reconciliation command, not an interactive launcher.
 
+`captain start` requires the installed Captain Bridge extension and rejects OMP's `--no-extensions`/`-ne` bypass. Officer sessions do not expose OMP `task`, `eval`, or `vibe_*` delegation tools; use the `captain assignment ...` CLI and Herdr workers instead. A live Officer is attached without restarting it, so an already-attached process cannot gain these restrictions retroactively; restart it manually when needed. Startup never restarts existing agents automatically.
+
 Writable workers use `<main-checkout>/.worktrees/<assignment-id>`, including when the originating checkout is linked. The directory is ignored through Git's local exclude file. Existing external worktrees are not automatically moved or deleted. Nesting does not copy uncommitted files, load the main `.env`, or inject main-checkout skills; the Officer supplies task context.
 
 ## Normal workflow

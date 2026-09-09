@@ -1,13 +1,19 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from captain_bridge.domain import ConflictError
+from captain_bridge.domain import ConflictError, ValidationError
 from captain_bridge.ships import create_ship, open_ship
-from captain_bridge.startup import _current_officer, _merge_prompt, _select_ship
+from captain_bridge.startup import (
+    _current_officer,
+    _merge_prompt,
+    _select_ship,
+    start,
+)
 from captain_bridge.storage import Storage
 
 
@@ -33,6 +39,98 @@ class StartupTests(unittest.TestCase):
         )
         (ship / "officer.json").write_text(json.dumps(officer), encoding="utf-8")
         return ship
+
+    def test_no_extensions_bypass_is_rejected_before_launch(self):
+        with patch("captain_bridge.startup.subprocess.run") as run:
+            for option in ("--no-extensions", "-ne"):
+                with self.subTest(option=option):
+                    with self.assertRaisesRegex(ValidationError, "Bridge extension required"):
+                        start([option])
+        run.assert_not_called()
+
+    def test_new_officer_launch_sets_role_and_clears_inherited_worker_binding(self):
+        ship = self.root / "ship"
+        ship.mkdir()
+        (ship / "officer.json").write_text(
+            json.dumps({"agentName": "officer", "paneId": "pane"}),
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CAPTAIN_BRIDGE_HOME": str(self.home),
+                    "CAPTAIN_BRIDGE_ASSIGNMENT": "worker-assignment",
+                    "CAPTAIN_BRIDGE_OFFICER": "worker-officer",
+                    "CAPTAIN_BRIDGE_ROLE": "worker",
+                },
+                clear=False,
+            ),
+            patch("captain_bridge.startup._git_root", return_value=self.repo),
+            patch("captain_bridge.startup._select_ship", return_value=ship),
+            patch("captain_bridge.startup._current_pane", return_value=None),
+            patch("captain_bridge.startup._live_officer_target", return_value=None),
+            patch(
+                "captain_bridge.startup.open_ship",
+                return_value={"officer": {"agentName": "officer", "paneId": "pane"}},
+            ),
+            patch("captain_bridge.startup._officer_prompt", return_value="policy"),
+            patch("captain_bridge.startup.subprocess.run") as run,
+        ):
+            run.return_value = subprocess.CompletedProcess([], 7)
+            self.assertEqual(start(["--model", "gpt"]), 7)
+
+        self.assertEqual(run.call_count, 1)
+        args = run.call_args.args[0]
+        self.assertEqual(args[:3], ["omp", "--model", "gpt"])
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["CAPTAIN_BRIDGE_ROLE"], "officer")
+        self.assertNotIn("CAPTAIN_BRIDGE_ASSIGNMENT", env)
+        self.assertNotIn("CAPTAIN_BRIDGE_OFFICER", env)
+
+    def test_failed_attach_falls_back_to_guarded_officer_launch(self):
+        ship = self.root / "ship"
+        ship.mkdir()
+        (ship / "officer.json").write_text(
+            json.dumps({"agentName": "officer", "paneId": "pane"}),
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "CAPTAIN_BRIDGE_HOME": str(self.home),
+                    "CAPTAIN_BRIDGE_ASSIGNMENT": "worker-assignment",
+                    "CAPTAIN_BRIDGE_OFFICER": "worker-officer",
+                    "CAPTAIN_BRIDGE_ROLE": "worker",
+                },
+                clear=False,
+            ),
+            patch("captain_bridge.startup._git_root", return_value=self.repo),
+            patch("captain_bridge.startup._select_ship", return_value=ship),
+            patch("captain_bridge.startup._current_pane", return_value=None),
+            patch("captain_bridge.startup._live_officer_target", return_value="old-officer"),
+            patch(
+                "captain_bridge.startup.open_ship",
+                side_effect=[
+                    {"officer": {"agentName": "officer", "paneId": "pane"}},
+                    {"officer": {}},
+                ],
+            ),
+            patch("captain_bridge.startup._officer_prompt", return_value="policy"),
+            patch("captain_bridge.startup.subprocess.run") as run,
+        ):
+            run.side_effect = [
+                subprocess.CompletedProcess([], 1),
+                subprocess.CompletedProcess([], 0),
+            ]
+            self.assertEqual(start([]), 0)
+
+        self.assertIsNone(run.call_args_list[0].kwargs["env"].get("CAPTAIN_BRIDGE_ROLE"))
+        env = run.call_args_list[1].kwargs["env"]
+        self.assertEqual(env["CAPTAIN_BRIDGE_ROLE"], "officer")
+        self.assertNotIn("CAPTAIN_BRIDGE_ASSIGNMENT", env)
+        self.assertNotIn("CAPTAIN_BRIDGE_OFFICER", env)
 
     def test_current_pane_overrides_inherited_officer_identity(self):
         (self.repo / ".git").mkdir()

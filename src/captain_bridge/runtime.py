@@ -425,6 +425,8 @@ def _start_fresh_resources(
             f"CAPTAIN_BRIDGE_ASSIGNMENT={assignment_id}",
             "--env",
             f"CAPTAIN_BRIDGE_OFFICER={officer}",
+            "--env",
+            "CAPTAIN_BRIDGE_ROLE=worker",
             "--no-focus",
         ])
         assert created is not None

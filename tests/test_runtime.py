@@ -77,9 +77,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn(str(self.repo.resolve()), create)
         self.assertIn("--label", create)
         self.assertIn(ASSIGNMENT_ID, create)
-        self.assertIn(f"CAPTAIN_BRIDGE_SHIP={self.ship.resolve()}", create)
         self.assertIn(f"CAPTAIN_BRIDGE_ASSIGNMENT={ASSIGNMENT_ID}", create)
         self.assertIn("CAPTAIN_BRIDGE_OFFICER=officer", create)
+        self.assertIn("CAPTAIN_BRIDGE_ROLE=worker", create)
         self.assertIn("--no-focus", create)
         prompt = run.call_args_list[-1].args[0]
         self.assertEqual(prompt, ["herdr", "agent", "prompt", ASSIGNMENT_ID, "Do the assigned work."])

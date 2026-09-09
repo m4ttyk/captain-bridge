@@ -169,8 +169,26 @@ def _merge_prompt(args: list[str], role_prompt: str, *, cwd: Path | None = None)
     forwarded.extend(["--append-system-prompt", "\n\n".join(prompt_parts)])
     return forwarded
 
+def _validate_start_args(args: list[str]) -> None:
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--append-system-prompt":
+            index += 2
+            continue
+        if value.startswith("--append-system-prompt="):
+            index += 1
+            continue
+        if value in {"--no-extensions", "-ne"}:
+            raise ValidationError(
+                "Captain Bridge extension required; --no-extensions/-ne is not supported by captain start"
+            )
+        index += 1
+
 
 def start(argv: list[str] | None = None) -> int:
+    args = list(argv or [])
+    _validate_start_args(args)
     launch_cwd = Path.cwd().expanduser().resolve()
     root = _git_root(launch_cwd)
     storage = Storage()
@@ -201,11 +219,13 @@ def start(argv: list[str] | None = None) -> int:
 
     bind_environment()
     if live_target:
+        attach_env = env.copy()
+        attach_env.pop("CAPTAIN_BRIDGE_ROLE", None)
         try:
             attached = subprocess.run(
                 ["herdr", "agent", "attach", live_target],
                 cwd=root,
-                env=env,
+                env=attach_env,
                 check=False,
             )
         except OSError:
@@ -218,12 +238,17 @@ def start(argv: list[str] | None = None) -> int:
         officer = opened.get("officer") if isinstance(opened.get("officer"), dict) else {}
         bind_environment()
 
-    omp_args = _merge_prompt(list(argv or []), _officer_prompt(), cwd=launch_cwd)
+    for key in ("CAPTAIN_BRIDGE_ASSIGNMENT", "CAPTAIN_BRIDGE_OFFICER", "CAPTAIN_BRIDGE_ROLE"):
+        env.pop(key, None)
+    env["CAPTAIN_BRIDGE_ROLE"] = "officer"
+    omp_args = _merge_prompt(args, _officer_prompt(), cwd=launch_cwd)
     omp_args.extend(["--cwd", str(root)])
     try:
         return subprocess.run(["omp", *omp_args], cwd=root, env=env, check=False).returncode
     except OSError as exc:
         raise OperationError(f"could not start omp: {exc}") from exc
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
